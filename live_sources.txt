@@ -3,4 +3,4 @@ http://old-link1.com/stream
 #EXTINF:-1,tvg-id="cctv2" tvg-name="cctv2" tvg-logo="https://epg.v1.mk/logo/cctv2.png" group-title="央视",CCTV-2财经
 http://139.214.176.163:9901/tsfile/live/1018_1.m3u8?key=txiptv&playlive=1&authid=0
 湖南卫视
-http://old-link3.com/stream
+http://221.200.194.133:8089/rtp/232.0.0.115:1234
