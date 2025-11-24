@@ -7,9 +7,9 @@ import os
 CONFIG = {
     # 要下载的m3u文件列表
     "m3u_sources": [
-        "https://gyssi.link/iptv/chinaiptv/%E5%90%89%E6%9E%97%E7%9C%81.m3u?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjI0NDUxOTY1NjY5MjEyNTUsImlhdCI6MTc1ODk1MTMyMywiZXhwIjoxNzkxNzgzMzIzfQ.MZQj0R5q-31SU_tO94udddDzH_Pf96s7UGiDt0xJ4nI",
-        "https://gyssi.link/iptv/chinaiptv/%E8%BE%BD%E5%AE%81%E7%9C%81.m3u?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjI0NDUxOTY1NjY5MjEyNTUsImlhdCI6MTc1ODk1MTMyMywiZXhwIjoxNzkxNzgzMzIzfQ.MZQj0R5q-31SU_tO94udddDzH_Pf96s7UGiDt0xJ4nI",
-        "https://gyssi.link/live/%E8%BE%BD%E5%AE%81.m3u?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjI0NDUxOTY1NjY5MjEyNTUsImlhdCI6MTc1ODk1MTMyMywiZXhwIjoxNzkxNzgzMzIzfQ.MZQj0R5q-31SU_tO94udddDzH_Pf96s7UGiDt0xJ4nI"
+        "https://gyssi.link/iptv/chinaiptv",
+        "https://gyssi.link/iptv/chinaiptv/",
+        "https://gyssi.link/live/%E8%BE%BD%E5%AE%81.m3u?t"
     ],
     
     # 要提取的关键词列表
