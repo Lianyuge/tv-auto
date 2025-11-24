@@ -25,16 +25,48 @@ def get_config():
         # 要下载的m3u文件列表（从环境变量获取）
         "m3u_sources": m3u_sources,
         
-        # 要提取的关键词列表
+        # 要提取的关键词列表 - 基于频道名称
         "keywords": [
             "CCTV-1",
-            "CCTV-5", 
+            "CCTV-2",
+            "CCTV-3",
+            "CCTV-4",
+            "CCTV-5",
+            "CCTV-5+",
+            "CCTV-6",
+            "CCTV-7",
+            "CCTV-8",
+            "CCTV-9",
+            "CCTV-10",
+            "CCTV-11",
+            "CCTV-12",
+            "CCTV-13",
             "湖南卫视",
-            "浙江卫视",
+            "辽宁卫视",
+            "辽宁都市",
+            "辽宁影视剧",
+            "辽宁体育",
+            "辽宁生活",
+            "辽宁教育青少",
+            "辽宁北方",
+            "辽宁宜佳购物",
+            "沈阳新闻",
+            "辽宁经济",
+            "吉林卫视",
+            "吉林都市",
+            "吉林综艺",
+            "吉林影视",
+            "吉林生活",
+            "吉林乡村",
+            "长影频道",
+            "吉林教育",
+            "延边卫视",
+            "松原",
+            "松原公共",
             "北京卫视",
             "江苏卫视",
             "东方卫视"
-            # 添加您需要的其他频道关键词
+            # 添加您需要的其他频道名称
         ],
         
         # 目标文件路径
@@ -92,31 +124,39 @@ def extract_links_from_m3u(file_path):
         for i in range(len(lines) - 1):
             line = lines[i]
             if line.startswith('#EXTINF'):
-                # 检查是否包含目标关键词
-                for keyword in CONFIG["keywords"]:
-                    if keyword in line:
-                        # 下一行就是链接
-                        if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
-                            link = lines[i + 1].strip()
-                            # 只存储第一个找到的链接（避免重复）
-                            if keyword not in keyword_links:
-                                keyword_links[keyword] = link
-                                print(f"找到频道: {keyword}")
-                            break
+                # 提取频道名称（最后一个逗号后面的部分）
+                if ',' in line:
+                    channel_name = line.split(',')[-1].strip()
+                    
+                    # 检查是否包含目标关键词
+                    for keyword in CONFIG["keywords"]:
+                        if keyword in channel_name:
+                            # 下一行就是链接
+                            if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                                link = lines[i + 1].strip()
+                                # 只存储第一个找到的链接（避免重复）
+                                if keyword not in keyword_links:
+                                    keyword_links[keyword] = {
+                                        'link': link,
+                                        'extinf_line': line  # 保存完整的EXTINF行
+                                    }
+                                    print(f"找到频道: {keyword}")
+                                break
     except Exception as e:
         print(f"解析文件 {file_path} 时出错: {e}")
     
     return keyword_links
 
 def update_target_file(keyword_links):
-    """更新目标文件中的链接"""
+    """更新目标文件中的链接，保持EXTINF行不变"""
     try:
         # 如果目标文件不存在，创建一个模板
         if not os.path.exists(CONFIG["target_file"]):
             print("目标文件不存在，正在创建...")
             with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
                 for keyword in CONFIG["keywords"]:
-                    f.write(f"{keyword}\n待更新\n")
+                    f.write(f'#EXTINF:-1,{keyword}\n')
+                    f.write('待更新\n')
         
         # 读取目标文件
         with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
@@ -129,24 +169,50 @@ def update_target_file(keyword_links):
         i = 0
         while i < len(lines):
             line = lines[i]
-            new_lines.append(line)
             
-            # 检查当前行是否包含关键词
-            for keyword, new_link in keyword_links.items():
-                if keyword in line:
-                    # 下一行应该是链接，进行替换
-                    if i + 1 < len(lines):
+            # 检查当前行是否是EXTINF行
+            if line.startswith('#EXTINF'):
+                # 提取频道名称
+                channel_name = line.split(',')[-1].strip() if ',' in line else ""
+                
+                # 检查这个频道名称是否匹配我们的关键词
+                matched_keyword = None
+                for keyword in CONFIG["keywords"]:
+                    if keyword in channel_name:
+                        matched_keyword = keyword
+                        break
+                
+                if matched_keyword and matched_keyword in keyword_links:
+                    # 添加EXTINF行（保持不变）
+                    new_lines.append(line)
+                    
+                    # 检查下一行是否是链接
+                    if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
                         old_link = lines[i + 1]
+                        new_link = keyword_links[matched_keyword]['link']
+                        
                         if old_link != new_link:
-                            print(f"更新 {keyword}: {old_link[:50]}... -> {new_link[:50]}...")
+                            print(f"更新 {matched_keyword}: {old_link[:50]}... -> {new_link[:50]}...")
                             new_lines.append(new_link)
-                            i += 1  # 跳过旧链接行
                             updated_count += 1
                         else:
                             # 链接相同，保留原链接
                             new_lines.append(old_link)
-                            i += 1
-                    break
+                        
+                        i += 1  # 跳过链接行
+                    else:
+                        # 没有找到链接行，添加新链接
+                        new_link = keyword_links[matched_keyword]['link']
+                        new_lines.append(new_link)
+                        print(f"添加 {matched_keyword}: {new_link[:50]}...")
+                        updated_count += 1
+                else:
+                    # 不匹配的频道，保持原样
+                    new_lines.append(line)
+            else:
+                # 非EXTINF行，保持原样
+                new_lines.append(line)
+            
             i += 1
         
         # 写回文件
@@ -182,6 +248,15 @@ def main():
         update_target_file(all_keyword_links)
     else:
         print("✗ 未找到任何匹配的频道链接")
+    
+    # 4. 打印更新摘要
+    print("\n更新摘要:")
+    for keyword in CONFIG["keywords"]:
+        if keyword in all_keyword_links:
+            link = all_keyword_links[keyword]['link']
+            print(f"✓ {keyword}: {link[:60]}...")
+        else:
+            print(f"✗ {keyword}: 未找到")
     
     print("更新流程完成")
 
