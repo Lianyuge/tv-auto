@@ -157,6 +157,50 @@ def extract_all_channels_from_m3u(file_path, source_index):
     
     return channels
 
+def extract_target_channels():
+    """从目标文件中提取所有频道信息"""
+    target_channels = []
+    
+    try:
+        if not os.path.exists(CONFIG["target_file"]):
+            print(f"目标文件 {CONFIG['target_file']} 不存在")
+            return target_channels
+        
+        with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        
+        for i in range(len(lines) - 1):
+            line = lines[i]
+            if line.startswith('#EXTINF'):
+                # 提取频道名称（最后一个逗号后面的部分）
+                if ',' in line:
+                    channel_name = line.split(',')[-1].strip()
+                    
+                    # 提取group-title
+                    group_match = re.search(r'group-title="([^"]*)"', line)
+                    group_title = group_match.group(1) if group_match else ""
+                    
+                    # 下一行就是链接
+                    if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                        link = lines[i + 1].strip()
+                        
+                        # 存储频道信息
+                        target_channels.append({
+                            'name': channel_name,
+                            'group': group_title,
+                            'link': link,
+                            'extinf_line': line
+                        })
+        
+        print(f"从目标文件中提取了 {len(target_channels)} 个频道")
+        
+    except Exception as e:
+        print(f"解析目标文件时出错: {e}")
+    
+    return target_channels
+
 def find_channel_by_rules(channel_name, group_title, all_channels):
     """根据规则查找匹配的频道"""
     # 规则1: 如果分组在规则中，从指定源查找相同分组和频道名称的频道
@@ -168,16 +212,14 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
                 channel['source'] == target_source):
                 return channel
     
-    # 规则2: 如果频道名称包含关键词，从所有源中查找相同频道名称的频道
-    for keyword in CONFIG["keywords"]:
-        if keyword in channel_name:
-            for channel in all_channels:
-                if channel['name'] == channel_name:
-                    return channel
+    # 规则2: 从所有源中查找相同频道名称的频道
+    for channel in all_channels:
+        if channel['name'] == channel_name:
+            return channel
     
     return None
 
-def update_target_file(all_channels):
+def update_target_file(all_channels, target_channels):
     """根据规则更新目标文件中的链接"""
     try:
         # 如果目标文件不存在，创建一个模板
@@ -187,6 +229,7 @@ def update_target_file(all_channels):
                 for keyword in CONFIG["keywords"]:
                     f.write(f'#EXTINF:-1,{keyword}\n')
                     f.write('待更新\n')
+            return
         
         # 读取目标文件
         with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
@@ -261,44 +304,47 @@ def main():
     for group, source_index in CONFIG["group_rules"].items():
         print(f"  {group} -> 从源{source_index+1}获取")
     
-    # 1. 下载m3u文件
+    # 1. 从目标文件中提取所有频道信息
+    target_channels = extract_target_channels()
+    
+    # 2. 下载m3u文件
     downloaded_files = download_m3u_files()
     
     if not downloaded_files:
         print("✗ 没有成功下载任何文件，终止流程")
         return
     
-    # 2. 从所有文件中提取频道信息
+    # 3. 从所有源文件中提取频道信息
     all_channels = []
     for source_index, file_path in enumerate(downloaded_files):
         channels = extract_all_channels_from_m3u(file_path, source_index)
         all_channels.extend(channels)
         print(f"从源{source_index+1}找到 {len(channels)} 个频道")
     
-    # 3. 更新目标文件
-    update_target_file(all_channels)
+    # 4. 更新目标文件
+    update_target_file(all_channels, target_channels)
     
-    # 4. 打印统计信息
+    # 5. 打印统计信息
     print("\n更新统计:")
-    keyword_matches = 0
-    group_matches = 0
+    # 统计目标文件中所有频道的更新情况
+    updated_count = 0
+    not_updated_count = 0
     
-    for keyword in CONFIG["keywords"]:
+    for target_channel in target_channels:
         matched = False
         for channel in all_channels:
-            if keyword in channel['name']:
+            if channel['name'] == target_channel['name']:
                 matched = True
-                if channel['group'] in CONFIG["group_rules"]:
-                    group_matches += 1
-                else:
-                    keyword_matches += 1
                 break
         
-        if not matched:
-            print(f"✗ 未找到: {keyword}")
+        if matched:
+            updated_count += 1
+        else:
+            not_updated_count += 1
+            print(f"✗ 未找到更新: {target_channel['name']} [{target_channel['group']}]")
     
-    print(f"✓ 关键词匹配: {keyword_matches} 个")
-    print(f"✓ 分组规则匹配: {group_matches} 个")
+    print(f"✓ 成功更新: {updated_count} 个频道")
+    print(f"✗ 未找到更新: {not_updated_count} 个频道")
     print("更新流程完成")
 
 if __name__ == "__main__":
