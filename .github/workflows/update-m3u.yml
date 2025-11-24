@@ -4,8 +4,6 @@ on:
   schedule:
     - cron: '0 2 * * *'  # 每天UTC时间2点运行（北京时间10点）
   workflow_dispatch:  # 允许手动触发
-  push:
-    branches: [ main ]
 
 jobs:
   update-sources:
@@ -14,7 +12,10 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
+      with:
+        token: ${{ secrets.PAT }}  # 使用PAT来checkout
+        fetch-depth: 0  # 获取所有历史记录
+        
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
@@ -25,16 +26,15 @@ jobs:
         
     - name: Run update script
       env:
-        # 从GitHub Secrets获取带token的URL
         M3U_SOURCE_1: ${{ secrets.M3U_SOURCE_1 }}
         M3U_SOURCE_2: ${{ secrets.M3U_SOURCE_2 }}
         M3U_SOURCE_3: ${{ secrets.M3U_SOURCE_3 }}
       run: python scripts/update_sources.py
       
-    - name: Commit changes
+    - name: Commit and push changes
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add .
-        git commit -m "Auto-update live sources: $(date +'%Y-%m-%d %H:%M')" || exit 0
+        git diff --staged --quiet || git commit -m "Auto-update live sources: $(date +'%Y-%m-%d %H:%M')"
         git push
