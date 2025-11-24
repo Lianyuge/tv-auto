@@ -25,13 +25,55 @@ def get_config():
         # 要下载的m3u文件列表（从环境变量获取）
         "m3u_sources": m3u_sources,
         
+        # 要提取的关键词列表 - 基于频道名称
+        "keywords": [
+            "CCTV-1",
+            "CCTV-2",
+            "CCTV-3",
+            "CCTV-4",
+            "CCTV-5",
+            "CCTV-5+",
+            "CCTV-6",
+            "CCTV-7",
+            "CCTV-8",
+            "CCTV-9",
+            "CCTV-10",
+            "CCTV-11",
+            "CCTV-12",
+            "CCTV-13",
+            "湖南卫视",
+            "辽宁卫视",
+            "辽宁都市",
+            "辽宁影视剧",
+            "辽宁体育",
+            "辽宁生活",
+            "辽宁教育青少",
+            "辽宁北方",
+            "辽宁宜佳购物",
+            "沈阳新闻",
+            "辽宁经济",
+            "吉林卫视",
+            "吉林都市",
+            "吉林综艺",
+            "吉林影视",
+            "吉林生活",
+            "吉林乡村",
+            "长影频道",
+            "吉林教育",
+            "延边卫视",
+            "松原",
+            "松原公共",
+            "北京卫视",
+            "江苏卫视",
+            "东方卫视"
+            # 添加您需要的其他频道名称
+        ],
+        
         # 分组规则映射
         "group_rules": {
             "央视吉林": 0,  # 从第一个源 (M3U_SOURCE_1) 获取
             "央视-辽宁地区": 1,  # 从第二个源 (M3U_SOURCE_2) 获取
             # 可以添加更多分组规则
-            # "央视北京": 0,
-            # "央视上海": 1,
         },
         
         # 目标文件路径
@@ -75,9 +117,9 @@ def download_m3u_files():
     
     return downloaded_files
 
-def extract_links_by_group_from_m3u(file_path, source_index):
-    """从m3u文件中提取所有频道链接，按group-title分类"""
-    group_channels = {}
+def extract_all_channels_from_m3u(file_path, source_index):
+    """从m3u文件中提取所有频道信息"""
+    channels = []
     
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -89,42 +131,62 @@ def extract_links_by_group_from_m3u(file_path, source_index):
         for i in range(len(lines) - 1):
             line = lines[i]
             if line.startswith('#EXTINF'):
-                # 提取group-title
-                group_match = re.search(r'group-title="([^"]*)"', line)
-                if group_match:
-                    group_title = group_match.group(1)
+                # 提取频道名称（最后一个逗号后面的部分）
+                if ',' in line:
+                    channel_name = line.split(',')[-1].strip()
                     
-                    # 提取频道名称（最后一个逗号后面的部分）
-                    if ',' in line:
-                        channel_name = line.split(',')[-1].strip()
+                    # 提取group-title
+                    group_match = re.search(r'group-title="([^"]*)"', line)
+                    group_title = group_match.group(1) if group_match else ""
+                    
+                    # 下一行就是链接
+                    if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                        link = lines[i + 1].strip()
                         
-                        # 下一行就是链接
-                        if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
-                            link = lines[i + 1].strip()
-                            
-                            # 按group-title组织频道
-                            if group_title not in group_channels:
-                                group_channels[group_title] = {}
-                            
-                            # 存储频道信息
-                            group_channels[group_title][channel_name] = {
-                                'link': link,
-                                'extinf_line': line,
-                                'source': source_index
-                            }
+                        # 存储频道信息
+                        channels.append({
+                            'name': channel_name,
+                            'group': group_title,
+                            'link': link,
+                            'extinf_line': line,
+                            'source': source_index
+                        })
     
     except Exception as e:
         print(f"解析文件 {file_path} 时出错: {e}")
     
-    return group_channels
+    return channels
 
-def update_target_file_by_group(all_group_channels):
-    """根据分组规则更新目标文件中的链接"""
+def find_channel_by_rules(channel_name, group_title, all_channels):
+    """根据规则查找匹配的频道"""
+    # 规则1: 如果分组在规则中，从指定源查找相同分组和频道名称的频道
+    if group_title in CONFIG["group_rules"]:
+        target_source = CONFIG["group_rules"][group_title]
+        for channel in all_channels:
+            if (channel['group'] == group_title and 
+                channel['name'] == channel_name and 
+                channel['source'] == target_source):
+                return channel
+    
+    # 规则2: 如果频道名称包含关键词，从所有源中查找相同频道名称的频道
+    for keyword in CONFIG["keywords"]:
+        if keyword in channel_name:
+            for channel in all_channels:
+                if channel['name'] == channel_name:
+                    return channel
+    
+    return None
+
+def update_target_file(all_channels):
+    """根据规则更新目标文件中的链接"""
     try:
-        # 如果目标文件不存在，报错
+        # 如果目标文件不存在，创建一个模板
         if not os.path.exists(CONFIG["target_file"]):
-            print(f"✗ 目标文件 {CONFIG['target_file']} 不存在")
-            return
+            print("目标文件不存在，正在创建...")
+            with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
+                for keyword in CONFIG["keywords"]:
+                    f.write(f'#EXTINF:-1,{keyword}\n')
+                    f.write('待更新\n')
         
         # 读取目标文件
         with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
@@ -135,65 +197,51 @@ def update_target_file_by_group(all_group_channels):
         new_lines = []
         
         i = 0
-        current_group = None
-        
         while i < len(lines):
             line = lines[i]
             new_lines.append(line)
             
-            # 检查当前行是否是EXTINF行，并提取group-title
+            # 检查当前行是否是EXTINF行
             if line.startswith('#EXTINF'):
+                # 提取频道名称和分组
+                channel_name = line.split(',')[-1].strip() if ',' in line else ""
                 group_match = re.search(r'group-title="([^"]*)"', line)
-                if group_match:
-                    current_group = group_match.group(1)
-                    
-                    # 检查这个group是否在我们的规则中
-                    if current_group in CONFIG["group_rules"]:
-                        # 提取频道名称
-                        if ',' in line:
-                            channel_name = line.split(',')[-1].strip()
-                            
-                            # 确定应该从哪个源获取
-                            source_index = CONFIG["group_rules"][current_group]
-                            
-                            # 检查下一行是否是链接
-                            if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
-                                old_link = lines[i + 1]
-                                
-                                # 从指定的源中查找相同group和channel的链接
-                                if (current_group in all_group_channels and 
-                                    channel_name in all_group_channels[current_group] and
-                                    all_group_channels[current_group][channel_name]['source'] == source_index):
-                                    
-                                    new_link = all_group_channels[current_group][channel_name]['link']
-                                    
-                                    if old_link != new_link:
-                                        print(f"更新 {current_group}/{channel_name}: {old_link[:50]}... -> {new_link[:50]}...")
-                                        new_lines.append(new_link)
-                                        updated_count += 1
-                                    else:
-                                        # 链接相同，保留原链接
-                                        new_lines.append(old_link)
-                                    
-                                    i += 1  # 跳过链接行
-                                else:
-                                    # 没有找到新链接，保留原链接
-                                    new_lines.append(lines[i + 1])
-                                    i += 1
-                            else:
-                                # 没有链接行，尝试添加新链接
-                                if (current_group in all_group_channels and 
-                                    channel_name in all_group_channels[current_group] and
-                                    all_group_channels[current_group][channel_name]['source'] == source_index):
-                                    
-                                    new_link = all_group_channels[current_group][channel_name]['link']
-                                    new_lines.append(new_link)
-                                    print(f"添加 {current_group}/{channel_name}: {new_link[:50]}...")
-                                    updated_count += 1
+                group_title = group_match.group(1) if group_match else ""
+                
+                # 根据规则查找匹配的频道
+                matched_channel = find_channel_by_rules(channel_name, group_title, all_channels)
+                
+                if matched_channel:
+                    # 检查下一行是否是链接
+                    if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
+                        old_link = lines[i + 1]
+                        new_link = matched_channel['link']
+                        
+                        if old_link != new_link:
+                            source_info = f" (来自源{matched_channel['source']+1})"
+                            print(f"更新 {channel_name} [{group_title}]: {old_link[:50]}... -> {new_link[:50]}...{source_info}")
+                            new_lines.append(new_link)
+                            updated_count += 1
+                        else:
+                            # 链接相同，保留原链接
+                            new_lines.append(old_link)
+                        
+                        i += 1  # 跳过链接行
+                    else:
+                        # 没有找到链接行，添加新链接
+                        new_link = matched_channel['link']
+                        source_info = f" (来自源{matched_channel['source']+1})"
+                        new_lines.append(new_link)
+                        print(f"添加 {channel_name} [{group_title}]: {new_link[:50]}...{source_info}")
+                        updated_count += 1
                 else:
-                    current_group = None
+                    # 没有找到匹配的频道，保持原样
+                    if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
+                        new_lines.append(lines[i + 1])
+                        i += 1
             else:
-                current_group = None
+                # 非EXTINF行，保持原样
+                pass
             
             i += 1
         
@@ -208,6 +256,7 @@ def update_target_file_by_group(all_group_channels):
 
 def main():
     print("开始更新直播源...")
+    print("关键词列表:", CONFIG["keywords"])
     print("分组规则:")
     for group, source_index in CONFIG["group_rules"].items():
         print(f"  {group} -> 从源{source_index+1}获取")
@@ -219,29 +268,37 @@ def main():
         print("✗ 没有成功下载任何文件，终止流程")
         return
     
-    # 2. 从所有文件中提取链接，按group-title组织
-    all_group_channels = {}
+    # 2. 从所有文件中提取频道信息
+    all_channels = []
     for source_index, file_path in enumerate(downloaded_files):
-        group_channels = extract_links_by_group_from_m3u(file_path, source_index)
+        channels = extract_all_channels_from_m3u(file_path, source_index)
+        all_channels.extend(channels)
+        print(f"从源{source_index+1}找到 {len(channels)} 个频道")
+    
+    # 3. 更新目标文件
+    update_target_file(all_channels)
+    
+    # 4. 打印统计信息
+    print("\n更新统计:")
+    keyword_matches = 0
+    group_matches = 0
+    
+    for keyword in CONFIG["keywords"]:
+        matched = False
+        for channel in all_channels:
+            if keyword in channel['name']:
+                matched = True
+                if channel['group'] in CONFIG["group_rules"]:
+                    group_matches += 1
+                else:
+                    keyword_matches += 1
+                break
         
-        # 合并到总字典中
-        for group, channels in group_channels.items():
-            if group not in all_group_channels:
-                all_group_channels[group] = {}
-            all_group_channels[group].update(channels)
+        if not matched:
+            print(f"✗ 未找到: {keyword}")
     
-    # 3. 打印找到的频道统计
-    print("\n找到的频道统计:")
-    for group in CONFIG["group_rules"]:
-        if group in all_group_channels:
-            count = len(all_group_channels[group])
-            print(f"  {group}: {count} 个频道")
-        else:
-            print(f"  {group}: 0 个频道")
-    
-    # 4. 更新目标文件
-    update_target_file_by_group(all_group_channels)
-    
+    print(f"✓ 关键词匹配: {keyword_matches} 个")
+    print(f"✓ 分组规则匹配: {group_matches} 个")
     print("更新流程完成")
 
 if __name__ == "__main__":
