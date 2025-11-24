@@ -1,0 +1,35 @@
+name: Update M3U Live Sources
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 每天UTC时间2点运行（北京时间10点）
+  workflow_dispatch:  # 允许手动触发
+  push:
+    branches: [ main ]
+
+jobs:
+  update-sources:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+        
+    - name: Install dependencies
+      run: pip install requests
+        
+    - name: Run update script
+      run: python scripts/update_sources.py
+      
+    - name: Commit changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add .
+        git commit -m "Auto-update live sources: $(date +'%Y-%m-%d %H:%M')" || exit 0
+        git push
