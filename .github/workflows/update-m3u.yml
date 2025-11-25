@@ -2,7 +2,7 @@ name: Update M3U Live Sources
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 每天UTC时间2点运行
+    - cron: '0 17 * * *'  # 每天UTC时间17点运行，北京时间凌晨1点
   workflow_dispatch:
 
 permissions:
@@ -47,3 +47,4 @@ jobs:
         git add .
         git diff --staged --quiet || git commit -m "Auto-update live sources: $(date +'%Y-%m-%d %H:%M')"
         git push
+
