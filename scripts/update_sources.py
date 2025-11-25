@@ -4,72 +4,65 @@ from datetime import datetime
 import os
 import sys
 
-# 配置部分 - 从环境变量获取带token的URL
+# 配置部分
 def get_config():
-    # 从环境变量获取URL（在GitHub Secrets中设置）
     m3u_sources = []
     
-    # 添加所有配置的源
-    for i in range(1, 10):  # 假设最多9个源
+    # 支持最多20个源
+    for i in range(1, 21):
         env_name = f"M3U_SOURCE_{i}"
         source_url = os.getenv(env_name)
         if source_url:
             m3u_sources.append(source_url)
-            print(f"已加载源 {i}: {source_url.split('?')[0]}...")  # 不打印完整URL避免泄露token
+            print(f"已加载源 {i}: {source_url.split('?')[0]}...")
     
     if not m3u_sources:
-        print("错误: 未找到任何M3U源URL，请检查GitHub Secrets设置")
+        print("错误: 未找到任何M3U源URL")
         sys.exit(1)
     
     return {
-        # 要下载的m3u文件列表（从环境变量获取）
         "m3u_sources": m3u_sources,
-        
-        # 分组规则映射
         "group_rules": {
-            "央视吉林": 0,  # 从第一个源 (M3U_SOURCE_1) 获取
-            "央视辽宁": 2,  # 从第三个源 (M3U_SOURCE_3) 获取
-            # 可以添加更多分组规则
+            "央视吉林": 0,   # 从源1获取
+            "央视辽宁": 2,   # 从源3获取
+            # 添加更多分组规则...
+            # "央视北京": 4,   # 从源5获取
+            # "央视上海": 5,   # 从源6获取
         },
-        
-        # 目标文件路径
         "target_file": "index.html",
-        
-        # 临时下载目录
-        "download_dir": "downloaded_sources"
+        "download_dir": "downloaded_sources",
+        "max_backup_sources": 5,  # 每个频道最多5个备选源
+        "min_sources_per_channel": 1,  # 每个频道至少需要1个源
     }
 
 CONFIG = get_config()
 
 def download_m3u_files():
-    """下载所有m3u文件（带token认证）"""
+    """下载所有m3u文件"""
     if not os.path.exists(CONFIG["download_dir"]):
         os.makedirs(CONFIG["download_dir"])
     
     downloaded_files = []
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     
     for i, url in enumerate(CONFIG["m3u_sources"]):
         try:
-            # 安全地打印URL（不显示token）
             safe_url = url.split('?')[0] if '?' in url else url
             print(f"正在下载源 {i+1}: {safe_url}...")
             
             response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()  # 如果请求失败则抛出异常
+            response.raise_for_status()
             
             filename = f"{CONFIG['download_dir']}/source_{i+1}_{datetime.now().strftime('%Y%m%d')}.m3u"
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(response.text)
             downloaded_files.append(filename)
-            print(f"✓ 成功下载源 {i+1}: {safe_url}")
+            print(f"✓ 成功下载源 {i+1}")
             
-        except requests.exceptions.RequestException as e:
-            print(f"✗ 下载失败源 {i+1} {safe_url}: {e}")
         except Exception as e:
-            print(f"✗ 处理源 {i+1} {safe_url} 时出错: {e}")
+            print(f"✗ 下载失败源 {i+1}: {e}")
     
     return downloaded_files
 
@@ -81,25 +74,18 @@ def extract_all_channels_from_m3u(file_path, source_index):
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # m3u文件格式： #EXTINF 行包含频道信息，下一行是链接
         lines = content.split('\n')
         
         for i in range(len(lines) - 1):
             line = lines[i]
             if line.startswith('#EXTINF'):
-                # 提取频道名称（最后一个逗号后面的部分）
                 if ',' in line:
                     channel_name = line.split(',')[-1].strip()
-                    
-                    # 提取group-title
                     group_match = re.search(r'group-title="([^"]*)"', line)
                     group_title = group_match.group(1) if group_match else ""
                     
-                    # 下一行就是链接
                     if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
                         link = lines[i + 1].strip()
-                        
-                        # 存储频道信息
                         channels.append({
                             'name': channel_name,
                             'group': group_title,
@@ -119,7 +105,7 @@ def extract_target_channels():
     
     try:
         if not os.path.exists(CONFIG["target_file"]):
-            print(f"目标文件 {CONFIG['target_file']} 不存在，将创建新文件")
+            print(f"目标文件 {CONFIG['target_file']} 不存在")
             return target_channels
         
         with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
@@ -130,19 +116,13 @@ def extract_target_channels():
         for i in range(len(lines) - 1):
             line = lines[i]
             if line.startswith('#EXTINF'):
-                # 提取频道名称（最后一个逗号后面的部分）
                 if ',' in line:
                     channel_name = line.split(',')[-1].strip()
-                    
-                    # 提取group-title
                     group_match = re.search(r'group-title="([^"]*)"', line)
                     group_title = group_match.group(1) if group_match else ""
                     
-                    # 下一行就是链接
                     if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
                         link = lines[i + 1].strip()
-                        
-                        # 存储频道信息
                         target_channels.append({
                             'name': channel_name,
                             'group': group_title,
@@ -157,9 +137,28 @@ def extract_target_channels():
     
     return target_channels
 
+def evaluate_link_quality(link):
+    """评估链接质量"""
+    quality_score = 0
+    
+    quality_rules = [
+        (r'cdn', 2),
+        (r'proxy', 1),
+        (r'rtp', 1),
+        (r'udp', 1),
+        (r'https://', 1),
+        (r'http://', 0),
+    ]
+    
+    for pattern, score in quality_rules:
+        if re.search(pattern, link, re.IGNORECASE):
+            quality_score += score
+    
+    return quality_score
+
 def find_channel_by_rules(channel_name, group_title, all_channels):
     """根据规则查找匹配的频道"""
-    # 规则1: 如果分组在规则中，从指定源查找相同分组和频道名称的频道
+    # 规则1: 如果分组在规则中，从指定源查找
     if group_title in CONFIG["group_rules"]:
         target_source = CONFIG["group_rules"][group_title]
         for channel in all_channels:
@@ -168,8 +167,7 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
                 channel['source'] == target_source):
                 return channel
     
-    # 规则2: 其他分组从所有源中查找相同频道名称的频道（按源顺序）
-    # 按源顺序查找，确保一致性
+    # 规则2: 其他分组从所有源中按顺序查找
     for source_index in range(len(CONFIG["m3u_sources"])):
         for channel in all_channels:
             if channel['name'] == channel_name and channel['source'] == source_index:
@@ -177,17 +175,40 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
     
     return None
 
-def update_target_file(all_channels, target_channels):
-    """根据规则更新目标文件中的链接"""
+def get_optimized_sources(channel_name, all_channels):
+    """获取优化排序的多个源"""
+    sources = []
+    
+    # 查找所有匹配的频道
+    for channel in all_channels:
+        if channel['name'] == channel_name:
+            sources.append({
+                'link': channel['link'],
+                'source': channel['source'],
+                'quality_score': evaluate_link_quality(channel['link'])
+            })
+    
+    # 去重
+    unique_sources = []
+    seen_links = set()
+    for source in sources:
+        if source['link'] not in seen_links:
+            unique_sources.append(source)
+            seen_links.add(source['link'])
+    
+    # 按质量排序
+    sorted_sources = sorted(unique_sources, key=lambda x: x['quality_score'], reverse=True)
+    
+    return sorted_sources[:CONFIG["max_backup_sources"]]
+
+def update_target_file_optimized(all_channels, target_channels):
+    """优化版本的目标文件更新"""
     try:
-        # 读取或创建目标文件
         if not os.path.exists(CONFIG["target_file"]):
             print("目标文件不存在，将创建新文件")
-            # 创建一个基础的M3U文件
             with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
-                f.write("#EXTM3U\n")
+                f.write("#EXTM3U\n# 自动生成的直播源文件 - 多源优化版\n")
         
-        # 读取目标文件内容
         with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
             content = f.read()
         
@@ -199,130 +220,121 @@ def update_target_file(all_channels, target_channels):
         while i < len(lines):
             line = lines[i]
             
-            # 检查当前行是否是EXTINF行
             if line.startswith('#EXTINF'):
-                # 提取频道名称和分组
                 channel_name = line.split(',')[-1].strip() if ',' in line else ""
                 group_match = re.search(r'group-title="([^"]*)"', line)
                 group_title = group_match.group(1) if group_match else ""
                 
-                # 根据规则查找匹配的频道
-                matched_channel = find_channel_by_rules(channel_name, group_title, all_channels)
+                # 根据分组规则获取主链接
+                primary_channel = find_channel_by_rules(channel_name, group_title, all_channels)
                 
-                if matched_channel:
-                    # 检查下一行是否是链接
-                    if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
-                        old_link = lines[i + 1]
-                        new_link = matched_channel['link']
-                        
-                        if old_link != new_link:
-                            source_info = f" (来自源{matched_channel['source']+1})"
-                            print(f"更新 {channel_name} [{group_title}]: {old_link[:50]}... -> {new_link[:50]}...{source_info}")
-                            new_lines.append(line)
-                            new_lines.append(new_link)
-                            updated_count += 1
-                        else:
-                            # 链接相同，保留原链接
-                            new_lines.append(line)
-                            new_lines.append(old_link)
-                        
-                        i += 1  # 跳过链接行
-                    else:
-                        # 没有找到链接行，添加新链接
-                        new_link = matched_channel['link']
-                        source_info = f" (来自源{matched_channel['source']+1})"
-                        new_lines.append(line)
-                        new_lines.append(new_link)
-                        print(f"添加 {channel_name} [{group_title}]: {new_link[:50]}...{source_info}")
-                        updated_count += 1
-                else:
-                    # 没有找到匹配的频道，保持原样
+                if primary_channel:
+                    # 获取多个优化源
+                    optimized_sources = get_optimized_sources(channel_name, all_channels)
+                    
                     new_lines.append(line)
+                    
+                    # 添加主链接
+                    new_lines.append(primary_channel['link'])
+                    
+                    # 添加备选链接
+                    if len(optimized_sources) > 1:
+                        new_lines.append(f"# 备选链接 (共{len(optimized_sources)}个源):")
+                        for j, source in enumerate(optimized_sources[1:], 1):
+                            quality_indicator = "★" * source['quality_score']
+                            source_info = f"源{source['source']+1}"
+                            new_lines.append(f"#备用{j}{quality_indicator}[{source_info}]: {source['link']}")
+                    
+                    updated_count += 1
+                    print(f"✓ {channel_name}: 主链接来自源{primary_channel['source']+1}, 共{len(optimized_sources)}个源")
+                    
+                    # 跳过原来的链接行
                     if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
-                        new_lines.append(lines[i + 1])
                         i += 1
+                else:
+                    # 没有找到主链接，尝试使用优化源
+                    optimized_sources = get_optimized_sources(channel_name, all_channels)
+                    if optimized_sources:
+                        new_lines.append(line)
+                        new_lines.append(optimized_sources[0]['link'])
+                        
+                        if len(optimized_sources) > 1:
+                            new_lines.append(f"# 备选链接 (共{len(optimized_sources)}个源):")
+                            for j, source in enumerate(optimized_sources[1:], 1):
+                                quality_indicator = "★" * source['quality_score']
+                                source_info = f"源{source['source']+1}"
+                                new_lines.append(f"#备用{j}{quality_indicator}[{source_info}]: {source['link']}")
+                        
+                        updated_count += 1
+                        print(f"✓ {channel_name}: 使用优化源，共{len(optimized_sources)}个源")
+                        
+                        if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
+                            i += 1
+                    else:
+                        # 完全没找到源，保持原样
+                        new_lines.append(line)
+                        if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
+                            new_lines.append(lines[i + 1])
+                            i += 1
             else:
-                # 非EXTINF行，保持原样
-                new_lines.append(line)
+                # 保留文件头注释，过滤掉旧的备选链接
+                if i == 0 and line.startswith('#'):
+                    new_lines.append(line)
+                elif not line.startswith('#备用'):
+                    new_lines.append(line)
             
             i += 1
         
-        # 写回文件
+        # 确保文件以EXTM3U开头
+        if not new_lines or not new_lines[0].startswith('#EXTM3U'):
+            new_lines.insert(0, '#EXTM3U')
+            new_lines.insert(1, '# 自动生成的直播源文件 - 多源优化版')
+        
         with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
             f.write('\n'.join(new_lines))
         
-        print(f"✓ 目标文件更新完成，共更新 {updated_count} 个频道")
+        print(f"✓ 优化完成: 共更新 {updated_count} 个频道")
         
     except Exception as e:
         print(f"✗ 更新目标文件时出错: {e}")
 
 def main():
-    print("开始更新直播源...")
+    print("开始优化直播源...")
+    print(f"可用源数量: {len(CONFIG['m3u_sources'])}")
     print("分组规则:")
     for group, source_index in CONFIG["group_rules"].items():
         print(f"  {group} -> 从源{source_index+1}获取")
     print("其他分组 -> 从所有源中综合获取")
+    print(f"每个频道最多提供 {CONFIG['max_backup_sources']} 个备选源")
     
-    # 1. 从目标文件中提取所有频道信息
+    # 从目标文件中提取所有频道信息
     target_channels = extract_target_channels()
     
-    # 2. 下载m3u文件
+    # 下载m3u文件
     downloaded_files = download_m3u_files()
     
     if not downloaded_files:
         print("✗ 没有成功下载任何文件，终止流程")
         return
     
-    # 3. 从所有源文件中提取频道信息
+    # 从所有源文件中提取频道信息
     all_channels = []
     for source_index, file_path in enumerate(downloaded_files):
         channels = extract_all_channels_from_m3u(file_path, source_index)
         all_channels.extend(channels)
         print(f"从源{source_index+1}找到 {len(channels)} 个频道")
     
-    # 4. 更新目标文件
-    update_target_file(all_channels, target_channels)
+    # 使用优化版本更新目标文件
+    update_target_file_optimized(all_channels, target_channels)
     
-    # 5. 打印统计信息
-    print("\n更新统计:")
-    updated_count = 0
-    not_updated_count = 0
-    
-    for target_channel in target_channels:
-        matched = False
-        for channel in all_channels:
-            if channel['name'] == target_channel['name']:
-                matched = True
-                break
-        
-        if matched:
-            updated_count += 1
-        else:
-            not_updated_count += 1
-            print(f"✗ 未找到更新: {target_channel['name']} [{target_channel['group']}]")
-    
-    print(f"✓ 成功更新: {updated_count} 个频道")
-    print(f"✗ 未找到更新: {not_updated_count} 个频道")
-    
-    # 6. 分组统计
-    print("\n分组统计:")
-    group_stats = {}
-    for target_channel in target_channels:
-        group = target_channel['group']
-        if group not in group_stats:
-            group_stats[group] = {'total': 0, 'updated': 0}
-        group_stats[group]['total'] += 1
-        
-        # 检查是否成功更新
-        for channel in all_channels:
-            if channel['name'] == target_channel['name']:
-                group_stats[group]['updated'] += 1
-                break
-    
-    for group, stats in group_stats.items():
-        print(f"  {group}: {stats['updated']}/{stats['total']} 个频道已更新")
-    
-    print("更新流程完成")
+    # 统计信息
+    total_sources = len(all_channels)
+    unique_channels = len(set(channel['name'] for channel in all_channels))
+    print(f"\n统计信息:")
+    print(f"总源数量: {total_sources}")
+    print(f"唯一频道数: {unique_channels}")
+    print(f"源文件数量: {len(downloaded_files)}")
+    print("优化流程完成")
 
 if __name__ == "__main__":
     main()
