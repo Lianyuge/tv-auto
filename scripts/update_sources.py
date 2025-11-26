@@ -36,6 +36,11 @@ def get_config():
                 "new_group_name": "连宇体育",  # 重命名为连宇体育
                 "position": "end"  # 放到文件最后
             }
+        },
+        # 更新时间频道配置
+        "update_channel": {
+            "group_title": "更新时间",
+            "fixed_link": "https://zhanglianyu.oss-cn-beijing.aliyuncs.com/new.mp4"
         }
     }
 
@@ -219,9 +224,10 @@ def update_target_file(all_channels, target_channels, special_channels):
         lines = content.split('\n')
         new_lines = []
         
-        # 获取所有特殊分组的新名称（用于过滤）
+        # 获取所有需要过滤的分组名称
         special_group_new_names = [config["new_group_name"] for config in CONFIG["special_groups"].values()]
         special_group_original_names = list(CONFIG["special_groups"].keys())
+        update_group_name = CONFIG["update_channel"]["group_title"]
         
         i = 0
         while i < len(lines):
@@ -232,8 +238,10 @@ def update_target_file(all_channels, target_channels, special_channels):
                 group_match = re.search(r'group-title="([^"]*)"', line)
                 group_title = group_match.group(1) if group_match else ""
                 
-                # 跳过特殊分组的频道（它们会在最后统一添加）
-                if group_title in special_group_new_names or group_title in special_group_original_names:
+                # 跳过特殊分组和更新分组的频道（它们会在最后统一添加）
+                if (group_title in special_group_new_names or 
+                    group_title in special_group_original_names or
+                    group_title == update_group_name):
                     # 跳过这个频道（EXTINF行和链接行）
                     if i + 1 < len(lines) and not lines[i + 1].startswith('#'):
                         i += 1
@@ -299,9 +307,9 @@ def update_target_file(all_channels, target_channels, special_channels):
         update_channel_name = f"最后更新: {beijing_time} (北京时间)"
         
         new_lines.append("")
-        new_lines.append("# 系统信息")
-        new_lines.append(f'#EXTINF:-1 tvg-id="update" tvg-name="update" tvg-logo="" group-title="系统信息",{update_channel_name}')
-        new_lines.append("https://github.com/Lianyuge/tv-auto")  # 可以替换为您仓库的链接
+        new_lines.append(f"# {update_group_name}分组")
+        new_lines.append(f'#EXTINF:-1 tvg-id="update" tvg-name="update" tvg-logo="" group-title="{update_group_name}",{update_channel_name}')
+        new_lines.append(CONFIG["update_channel"]["fixed_link"])
         
         print(f"✓ 添加更新时间频道: {update_channel_name}")
         
@@ -324,6 +332,7 @@ def main():
     for original_name, config in CONFIG["special_groups"].items():
         print(f"  {original_name} -> {config['new_group_name']} (从源{config['source_index']+1}获取，放到文件{config['position']})")
     
+    print(f"更新时间分组: {CONFIG['update_channel']['group_title']}")
     print("其他分组 -> 从所有源中按顺序获取")
     
     # 从目标文件中提取所有频道信息
