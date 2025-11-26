@@ -1,6 +1,6 @@
 import requests
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 import sys
 
@@ -40,6 +40,13 @@ def get_config():
     }
 
 CONFIG = get_config()
+
+def get_beijing_time():
+    """获取北京时间"""
+    # UTC时间+8小时=北京时间
+    utc_time = datetime.now(timezone.utc)
+    beijing_time = utc_time + timedelta(hours=8)
+    return beijing_time.strftime('%Y-%m-%d %H:%M:%S')
 
 def download_m3u_files():
     """下载所有m3u文件"""
@@ -286,6 +293,17 @@ def update_target_file(all_channels, target_channels, special_channels):
                 new_lines.append(channel['link'])
                 print(f"添加特殊分组: {channel['name']} [{channel['group']}]")
                 updated_count += 1
+        
+        # 添加更新时间频道（放在最最后）
+        beijing_time = get_beijing_time()
+        update_channel_name = f"最后更新: {beijing_time} (北京时间)"
+        
+        new_lines.append("")
+        new_lines.append("# 系统信息")
+        new_lines.append(f'#EXTINF:-1 tvg-id="update" tvg-name="update" tvg-logo="" group-title="系统信息",{update_channel_name}')
+        new_lines.append("https://github.com/Lianyuge/tv-auto")  # 可以替换为您仓库的链接
+        
+        print(f"✓ 添加更新时间频道: {update_channel_name}")
         
         with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
             f.write('\n'.join(new_lines))
