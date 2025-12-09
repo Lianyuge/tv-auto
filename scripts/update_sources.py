@@ -3,8 +3,14 @@ import re
 from datetime import datetime, timezone, timedelta
 import os
 import sys
+import logging
+import time
+from logging.handlers import RotatingFileHandler
 
-# 配置部分
+# ==================== 全局日志对象初始化占位 ====================
+logger = None
+
+# ==================== 配置部分 ====================
 def get_config():
     m3u_sources = []
     
@@ -14,10 +20,9 @@ def get_config():
         source_url = os.getenv(env_name)
         if source_url:
             m3u_sources.append(source_url)
-            print(f"已加载源 {i}: {source_url.split('?')[0]}...")
     
     if not m3u_sources:
-        print("错误: 未找到任何M3U源URL")
+        logger.error("错误: 未找到任何M3U源URL")
         sys.exit(1)
     
     return {
@@ -25,7 +30,6 @@ def get_config():
         "group_rules": {
             "央视吉林": 0,   # 从源1获取
             "央视辽宁": 2,   # 从源3获取
-            # 可以添加更多分组规则
         },
         "target_file": "index.html",
         "download_dir": "downloaded_sources",
@@ -41,18 +45,37 @@ def get_config():
         "update_channel": {
             "group_title": "更新时间",
             "fixed_link": "https://zhanglianyu.oss-cn-beijing.aliyuncs.com/new.mp4"
+        },
+        # !!! 新增：频道名称映射表 (解决“吉林都市”和“吉视都市”匹配问题) !!!
+        "channel_name_mapping": {
+            "吉视都市": ["吉林都市", "吉视都市", "吉林电视台都市频道"],
+            "吉林都市": ["吉林都市", "吉视都市", "吉林电视台都市频道"],
+            "吉视影视": ["吉林影视", "吉视影视", "吉林电视台影视台"],
+            "吉林影视": ["吉林影视", "吉视影视", "吉林电视台影视台"],
+            "吉林乡村": ["吉林乡村", "吉林电视台乡村频道", "吉林乡村频道"],
+            # 您可以继续在此处添加更多名称映射
         }
     }
 
-CONFIG = get_config()
+CONFIG = None  # 将在main中初始化
 
+# ==================== 工具函数 ====================
 def get_beijing_time():
     """获取北京时间"""
-    # UTC时间+8小时=北京时间
     utc_time = datetime.now(timezone.utc)
     beijing_time = utc_time + timedelta(hours=8)
     return beijing_time.strftime('%Y-%m-%d %H:%M:%S')
 
+def normalize_channel_name(channel_name, channel_mapping):
+    """标准化频道名称：如果名称在映射表中，返回标准名称"""
+    if not channel_mapping:
+        return channel_name
+    for standard_name, variants in channel_mapping.items():
+        if channel_name in variants:
+            return standard_name
+    return channel_name
+
+# ==================== 核心功能函数 ====================
 def download_m3u_files():
     """下载所有m3u文件"""
     if not os.path.exists(CONFIG["download_dir"]):
@@ -66,7 +89,7 @@ def download_m3u_files():
     for i, url in enumerate(CONFIG["m3u_sources"]):
         try:
             safe_url = url.split('?')[0] if '?' in url else url
-            print(f"正在下载源 {i+1}: {safe_url}...")
+            logger.info(f"正在下载源 {i+1}: {safe_url}...")
             
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
@@ -75,10 +98,10 @@ def download_m3u_files():
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(response.text)
             downloaded_files.append(filename)
-            print(f"✓ 成功下载源 {i+1}")
+            logger.info(f"✓ 成功下载源 {i+1}")
             
         except Exception as e:
-            print(f"✗ 下载失败源 {i+1}: {e}")
+            logger.error(f"✗ 下载失败源 {i+1}: {e}")
     
     return downloaded_files
 
@@ -113,7 +136,7 @@ def extract_all_channels_from_m3u(file_path, source_index):
                         })
     
     except Exception as e:
-        print(f"解析文件 {file_path} 时出错: {e}")
+        logger.error(f"解析文件 {file_path} 时出错: {e}")
     
     return channels
 
@@ -143,7 +166,8 @@ def extract_special_group_channels(all_channels):
                     'original_group': group_name  # 保留原始分组名用于日志
                 })
         
-        print(f"从源{source_index+1}找到 {len([c for c in special_channels if c['original_group'] == group_name])} 个'{group_name}'频道，将重命名为'{new_group_name}'")
+        count = len([c for c in special_channels if c['original_group'] == group_name])
+        logger.info(f"从源{source_index+1}找到 {count} 个'{group_name}'频道，将重命名为'{new_group_name}'")
     
     return special_channels
 
@@ -153,7 +177,7 @@ def extract_target_channels():
     
     try:
         if not os.path.exists(CONFIG["target_file"]):
-            print(f"目标文件 {CONFIG['target_file']} 不存在")
+            logger.info(f"目标文件 {CONFIG['target_file']} 不存在")
             return target_channels
         
         with open(CONFIG["target_file"], 'r', encoding='utf-8') as f:
@@ -178,33 +202,44 @@ def extract_target_channels():
                             'extinf_line': line
                         })
         
-        print(f"从目标文件中提取了 {len(target_channels)} 个频道")
+        logger.info(f"从目标文件中提取了 {len(target_channels)} 个频道")
         
     except Exception as e:
-        print(f"解析目标文件时出错: {e}")
+        logger.error(f"解析目标文件时出错: {e}")
     
     return target_channels
 
 def find_channel_by_rules(channel_name, group_title, all_channels):
-    """根据规则查找匹配的频道"""
+    """根据规则查找匹配的频道 (支持名称映射)"""
     # 跳过特殊分组的频道（它们会单独处理）
     special_group_names = [config["new_group_name"] for config in CONFIG["special_groups"].values()]
     if group_title in special_group_names:
         return None
     
+    # !!! 关键修改：标准化目标频道名称 !!!
+    normalized_target_name = normalize_channel_name(channel_name, CONFIG.get("channel_name_mapping", {}))
+    
     # 规则1: 如果分组在规则中，从指定源查找
     if group_title in CONFIG["group_rules"]:
         target_source = CONFIG["group_rules"][group_title]
         for channel in all_channels:
+            # !!! 关键修改：标准化源频道名称进行比较 !!!
+            normalized_source_name = normalize_channel_name(channel['name'], CONFIG.get("channel_name_mapping", {}))
             if (channel['group'] == group_title and 
-                channel['name'] == channel_name and 
+                normalized_source_name == normalized_target_name and 
                 channel['source'] == target_source):
+                # 记录名称映射使用情况
+                if channel['name'] != channel_name:
+                    logger.debug(f"名称映射匹配: 目标'{channel_name}' -> 源'{channel['name']}' (标准化为 '{normalized_target_name}')")
                 return channel
     
     # 规则2: 其他分组从所有源中按顺序查找
     for source_index in range(len(CONFIG["m3u_sources"])):
         for channel in all_channels:
-            if channel['name'] == channel_name and channel['source'] == source_index:
+            normalized_source_name = normalize_channel_name(channel['name'], CONFIG.get("channel_name_mapping", {}))
+            if normalized_source_name == normalized_target_name and channel['source'] == source_index:
+                if channel['name'] != channel_name:
+                    logger.debug(f"名称映射匹配: 目标'{channel_name}' -> 源'{channel['name']}' (标准化为 '{normalized_target_name}')")
                 return channel
     
     return None
@@ -212,8 +247,10 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
 def update_target_file(all_channels, target_channels, special_channels):
     """更新目标文件中的链接"""
     try:
+        logger.info("开始更新目标文件...")
+        
         if not os.path.exists(CONFIG["target_file"]):
-            print("目标文件不存在，将创建新文件")
+            logger.warning("目标文件不存在，将创建新文件")
             with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
                 f.write("#EXTM3U\n")
         
@@ -248,7 +285,7 @@ def update_target_file(all_channels, target_channels, special_channels):
                     i += 1
                     continue
                 
-                # 根据分组规则获取链接
+                # 根据规则查找匹配的频道
                 matched_channel = find_channel_by_rules(channel_name, group_title, all_channels)
                 
                 if matched_channel:
@@ -258,7 +295,7 @@ def update_target_file(all_channels, target_channels, special_channels):
                         new_link = matched_channel['link']
                         
                         if old_link != new_link:
-                            print(f"更新 {channel_name} [{group_title}]: 源{matched_channel['source']+1}")
+                            logger.info(f"更新 {channel_name} [{group_title}]: 源{matched_channel['source']+1}")
                             new_lines.append(line)
                             new_lines.append(new_link)
                             updated_count += 1
@@ -273,7 +310,7 @@ def update_target_file(all_channels, target_channels, special_channels):
                         new_link = matched_channel['link']
                         new_lines.append(line)
                         new_lines.append(new_link)
-                        print(f"添加 {channel_name} [{group_title}]: 源{matched_channel['source']+1}")
+                        logger.info(f"添加 {channel_name} [{group_title}]: 源{matched_channel['source']+1}")
                         updated_count += 1
                 else:
                     # 没有找到匹配的频道，保持原样
@@ -299,7 +336,7 @@ def update_target_file(all_channels, target_channels, special_channels):
             for channel in special_channels:
                 new_lines.append(channel['extinf_line'])
                 new_lines.append(channel['link'])
-                print(f"添加特殊分组: {channel['name']} [{channel['group']}]")
+                logger.info(f"添加特殊分组: {channel['name']} [{channel['group']}]")
                 updated_count += 1
         
         # 添加更新时间频道（放在最最后）
@@ -311,62 +348,122 @@ def update_target_file(all_channels, target_channels, special_channels):
         new_lines.append(f'#EXTINF:-1 tvg-id="update" tvg-name="update" tvg-logo="" group-title="{update_group_name}",{update_channel_name}')
         new_lines.append(CONFIG["update_channel"]["fixed_link"])
         
-        print(f"✓ 添加更新时间频道: {update_channel_name}")
+        logger.info(f"添加更新时间频道: {update_channel_name}")
         
         with open(CONFIG["target_file"], 'w', encoding='utf-8') as f:
             f.write('\n'.join(new_lines))
         
-        print(f"✓ 更新完成: 共更新 {updated_count} 个频道")
+        logger.info(f"更新完成: 共更新 {updated_count} 个频道")
         
     except Exception as e:
-        print(f"✗ 更新目标文件时出错: {e}")
+        logger.error(f"更新目标文件时出错: {e}", exc_info=True)
+        raise
+
+# ==================== 日志与主程序 ====================
+def setup_logging():
+    """配置日志系统"""
+    # 创建日志目录
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    # 设置日志文件名（按日期）
+    log_date = datetime.now().strftime('%Y%m%d')
+    log_filename = f"{log_dir}/tv_auto_update_{log_date}.log"
+    
+    # 配置日志格式
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+    
+    # 创建logger
+    _logger = logging.getLogger('TVAutoUpdater')
+    _logger.setLevel(logging.INFO)
+    
+    # 清除已有的handler，避免重复
+    if _logger.handlers:
+        _logger.handlers.clear()
+    
+    # 文件处理器（按大小轮转，最大5MB，保留3个备份）
+    file_handler = RotatingFileHandler(
+        log_filename, 
+        maxBytes=5*1024*1024,  # 5MB
+        backupCount=3,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', date_format))
+    
+    # 添加处理器到logger
+    _logger.addHandler(file_handler)
+    _logger.addHandler(console_handler)
+    
+    return _logger
 
 def main():
-    print("开始更新直播源...")
-    print(f"可用源数量: {len(CONFIG['m3u_sources'])}")
-    print("分组规则:")
-    for group, source_index in CONFIG["group_rules"].items():
-        print(f"  {group} -> 从源{source_index+1}获取")
+    global logger, CONFIG
+    start_time = time.time()
     
-    print("特殊分组处理:")
-    for original_name, config in CONFIG["special_groups"].items():
-        print(f"  {original_name} -> {config['new_group_name']} (从源{config['source_index']+1}获取，放到文件{config['position']})")
+    # 1. 初始化日志系统
+    logger = setup_logging()
+    logger.info("=" * 60)
+    logger.info("开始执行直播源自动更新任务")
+    logger.info(f"启动时间 (北京时间): {get_beijing_time()}")
+    logger.info("=" * 60)
     
-    print(f"更新时间分组: {CONFIG['update_channel']['group_title']}")
-    print("其他分组 -> 从所有源中按顺序获取")
-    
-    # 从目标文件中提取所有频道信息
-    target_channels = extract_target_channels()
-    
-    # 下载m3u文件
-    downloaded_files = download_m3u_files()
-    
-    if not downloaded_files:
-        print("✗ 没有成功下载任何文件，终止流程")
-        return
-    
-    # 从所有源文件中提取频道信息
-    all_channels = []
-    for source_index, file_path in enumerate(downloaded_files):
-        channels = extract_all_channels_from_m3u(file_path, source_index)
-        all_channels.extend(channels)
-        print(f"从源{source_index+1}找到 {len(channels)} 个频道")
-    
-    # 提取特殊分组的频道
-    special_channels = extract_special_group_channels(all_channels)
-    
-    # 更新目标文件
-    update_target_file(all_channels, target_channels, special_channels)
-    
-    # 统计信息
-    total_sources = len(all_channels)
-    unique_channels = len(set(channel['name'] for channel in all_channels))
-    print(f"\n统计信息:")
-    print(f"总源数量: {total_sources}")
-    print(f"唯一频道数: {unique_channels}")
-    print(f"源文件数量: {len(downloaded_files)}")
-    print(f"特殊分组频道数: {len(special_channels)}")
-    print("更新流程完成")
+    try:
+        # 2. 加载配置
+        CONFIG = get_config()
+        logger.info(f"已加载配置，共有 {len(CONFIG['m3u_sources'])} 个源地址")
+        
+        # 记录频道名称映射表（用于调试）
+        if CONFIG.get("channel_name_mapping"):
+            logger.info("已启用频道名称映射，将处理以下名称变体：")
+            for std_name, variants in CONFIG["channel_name_mapping"].items():
+                if len(variants) > 1:  # 只打印有变体的
+                    logger.info(f"  '{std_name}': {variants}")
+        
+        # 3. 从目标文件中提取所有频道信息
+        target_channels = extract_target_channels()
+        
+        # 4. 下载m3u文件
+        downloaded_files = download_m3u_files()
+        
+        if not downloaded_files:
+            logger.error("没有成功下载任何文件，任务终止")
+            return
+        
+        # 5. 从所有源文件中提取频道信息
+        all_channels = []
+        for source_index, file_path in enumerate(downloaded_files):
+            channels = extract_all_channels_from_m3u(file_path, source_index)
+            all_channels.extend(channels)
+            logger.info(f"从源{source_index+1}解析出 {len(channels)} 个频道")
+        
+        # 6. 提取特殊分组的频道
+        special_channels = extract_special_group_channels(all_channels)
+        
+        # 7. 更新目标文件
+        update_target_file(all_channels, target_channels, special_channels)
+        
+        # 8. 任务完成，输出统计
+        end_time = time.time()
+        duration = end_time - start_time
+        logger.info("=" * 60)
+        logger.info("任务执行成功完成")
+        logger.info(f"完成时间 (北京时间): {get_beijing_time()}")
+        logger.info(f"总耗时: {duration:.2f} 秒")
+        logger.info(f"共处理频道源: {len(all_channels)} 个")
+        logger.info(f"更新目标文件: {CONFIG['target_file']}")
+        logger.info("=" * 60)
+        
+    except Exception as e:
+        logger.error(f"任务执行失败，原因: {e}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
     main()
