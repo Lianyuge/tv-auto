@@ -242,7 +242,7 @@ def extract_all_channels_from_m3u(file_path, source_index):
     return channels
 
 def extract_migu_sports_channels_from_file(file_path, source_index):
-    """从源文件直接提取咪咕体育频道（全新解析逻辑）"""
+    """从源文件直接提取咪咕体育频道（适配无EXTINF格式）"""
     migu_config = CONFIG.get("migu_sports")
     if not migu_config or source_index != migu_config["source_index"]:
         return {}
@@ -266,9 +266,15 @@ def extract_migu_sports_channels_from_file(file_path, source_index):
         
         i = 0
         migu_channels_found = 0
+        skip_count = 0
         
         while i < len(lines):
             line = lines[i].strip()
+            
+            # 跳过空行
+            if not line:
+                i += 1
+                continue
             
             # 检查是否是咪咕体育分组标题行
             migu_match = re.search(r'咪咕体育-(\d{8})', line)
@@ -286,31 +292,24 @@ def extract_migu_sports_channels_from_file(file_path, source_index):
                     logger.warning(f"咪咕体育日期解析失败: {line}")
                     current_migu_date = None
             
-            # 如果当前有活跃的咪咕分组，检查下面的频道
-            if current_migu_date and line.startswith('#EXTINF'):
-                # 提取频道信息
-                if ',' in line:
-                    channel_name = extract_channel_name_from_extinf(line)
+            # 如果当前有活跃的咪咕分组，检查下面的频道行（格式：频道名称,链接）
+            if current_migu_date and ',' in line and not line.startswith('#'):
+                # 分割频道名称和链接
+                parts = line.split(',', 1)
+                if len(parts) == 2:
+                    channel_name, link = parts[0].strip(), parts[1].strip()
                     
-                    if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
-                        link = lines[i + 1].strip()
-                        
-                        # 构建新的EXTINF行，添加正确的分组
-                        if 'group-title=' in line:
-                            new_extinf_line = re.sub(
-                                r'group-title="[^"]*"',
-                                f'group-title="{current_group_name}"',
-                                line
-                            )
-                        else:
-                            # 如果没有group-title，添加一个
-                            new_extinf_line = f'{line} group-title="{current_group_name}"'
+                    # 验证链接看起来像URL
+                    if link.startswith('http'):
+                        # 构建EXTINF行（因为目标文件需要标准M3U格式）
+                        # 注意：原始文件没有tvg-id等属性，我们只添加必需的
+                        extinf_line = f'#EXTINF:-1 group-title="{current_group_name}",{channel_name}'
                         
                         classified_channels[current_group_name].append({
                             'name': channel_name,
                             'group': current_group_name,
                             'link': link,
-                            'extinf_line': new_extinf_line,
+                            'extinf_line': extinf_line,
                             'source': source_index,
                             'migu_date': current_migu_date,
                             'category': current_category
@@ -320,32 +319,38 @@ def extract_migu_sports_channels_from_file(file_path, source_index):
                         
                         if migu_channels_found <= 5:  # 只记录前5个频道
                             logger.debug(f"  咪咕频道: {channel_name} -> {current_group_name}")
-                
-                i += 2  # 跳过EXTINF行和链接行
-                continue
+                    else:
+                        logger.warning(f"  忽略无效链接行: {line[:50]}...")
+                else:
+                    logger.warning(f"  无法解析频道行: {line[:50]}...")
             
-            # 重置当前分组状态（如果遇到新的分组标题或其他内容）
-            if line.startswith('#') and ('体育' in line or 'genre' in line) and current_migu_date:
-                logger.debug(f"重置咪咕分组状态，遇到新行: {line[:50]}...")
-                current_migu_date = None
+            # 如果不是咪咕体育分组行，也不包含逗号（不是频道行），则跳过
+            elif not line.startswith('#') and ',' not in line:
+                skip_count += 1
+                if skip_count <= 3:  # 只记录前3个被跳过的行
+                    logger.debug(f"  跳过非频道行: {line[:50]}...")
             
             i += 1
         
         logger.info(f"从文件 {os.path.basename(file_path)} 解析出 {migu_channels_found} 个咪咕体育频道")
         
         # 统计并记录日志
-        total_migu = sum(len(channels) for channels in classified_channels.values())
+        total_migu = sum(len(channels) for channels in classified_channels.items())
         logger.info(f"总计分类咪咕频道: {total_migu} 个")
         
         for group_name, channels in classified_channels.items():
             logger.info(f"  - {group_name}: {len(channels)} 个频道")
             if channels:
-                logger.debug(f"    示例: {channels[0]['name'][:50]}...")
+                # 显示前3个频道作为示例
+                example_channels = channels[:3]
+                for chan in example_channels:
+                    logger.debug(f"    示例频道: {chan['name'][:50]}...")
+        
+        return dict(classified_channels)
     
     except Exception as e:
         logger.error(f"解析咪咕体育文件 {file_path} 时出错: {e}", exc_info=True)
-    
-    return dict(classified_channels)
+        return {}
 
 def extract_special_group_channels(all_channels):
     """提取特殊分组的频道（冰茶体育）"""
@@ -612,7 +617,14 @@ def update_target_file(all_channels, target_channels, special_channels, migu_cha
                 if channels:  # 只添加有频道的分组
                     new_lines.append(f"# {group_name}分组")
                     for channel in channels:
-                        new_lines.append(channel['extinf_line'])
+                        # 确保频道有EXTINF行
+                        if 'extinf_line' in channel:
+                            new_lines.append(channel['extinf_line'])
+                        else:
+                            # 如果没有，创建一个
+                            extinf_line = f'#EXTINF:-1 group-title="{channel["group"]}",{channel["name"]}'
+                            new_lines.append(extinf_line)
+                        
                         new_lines.append(channel['link'])
                         logger.info(f"添加咪咕分组: '{channel['name']}' [{channel['group']}]")
                         updated_count += 1
