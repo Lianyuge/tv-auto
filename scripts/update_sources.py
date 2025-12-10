@@ -305,10 +305,36 @@ def extract_migu_sports_channels_from_file(file_path, source_index):
                         # 注意：原始文件没有tvg-id等属性，我们只添加必需的
                         extinf_line = f'#EXTINF:-1 group-title="{current_group_name}",{channel_name}'
                         
+                        # ========== 新增：加密原始链接并生成 Cloudflare Worker 代理链接 ==========
+                        import base64
+                        # ！！！！！！ 重要：以下两个值需要修改 ！！！！！！
+                        YOUR_WORKER_URL = "https://crimson-sound-09ba.lianyu1868.workers.dev"
+                        YOUR_SECRET_ACCESS_KEY = "Ff905113"  # 与 Worker 代码中的 VALID_KEY 一致
+                        ENCRYPTION_KEY = "Ff905113%"        # 与 Worker 代码中的 decryptionKey 一致
+                        
+                        # 简单的加密函数（XOR + Base64），与 Worker 中的解密对应
+                        def encrypt_url(url, key):
+                            """加密URL，使其在传输中不可读"""
+                            key_bytes = key.encode('utf-8')
+                            url_bytes = url.encode('utf-8')
+                            encrypted = bytearray()
+                            for i in range(len(url_bytes)):
+                                encrypted.append(url_bytes[i] ^ key_bytes[i % len(key_bytes)])
+                            # 使用 urlsafe_b64encode 避免链接中出现特殊字符问题
+                            return base64.urlsafe_b64encode(encrypted).decode('utf-8')
+                        
+                        # 生成加密令牌
+                        encrypted_token = encrypt_url(link, ENCRYPTION_KEY)
+                        # 构建最终的代理链接
+                        proxy_link = f"{YOUR_WORKER_URL}/?t={encrypted_token}&k={YOUR_SECRET_ACCESS_KEY}"
+                        logger.info(f"已将咪咕链接替换为代理链接: {channel_name[:30]}...")
+                        final_link = proxy_link
+                        # ========== 结束新增 ==========
+                        
                         classified_channels[current_group_name].append({
                             'name': channel_name,
                             'group': current_group_name,
-                            'link': link,
+                            'link': final_link,  # 这里存储的是加密后的代理链接
                             'extinf_line': extinf_line,
                             'source': source_index,
                             'migu_date': current_migu_date,
