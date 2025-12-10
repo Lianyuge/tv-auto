@@ -120,14 +120,14 @@ def get_config():
         # !!! 重要：以下三个值必须与 Cloudflare Worker 代码中的设置完全一致 !!!
         "proxy_config": {
             "enabled": True,  # 是否启用代理（设为 False 则使用原始链接）
-            "worker_url": "https://crimson-sound-09ba.lianyu1868.workers.dev",  # 你的 Cloudflare Worker 地址
+            "worker_url": "https://link.dzpp.uk",  # 你的 Cloudflare Worker 地址
             "access_key": "Ff905113",  # 访问密钥，与 Worker 中的 VALID_KEY 一致
             "encryption_key": "Ff905113%"  # 加密密钥，与 Worker 中的 decryptionKey 一致
         },
         # ==================== 海外频道代理配置 ====================
         "overseas_proxy": {
             "enabled": True,  # 是否启用海外频道代理
-            "worker_url": "https://royal-morning-52a8.lianyu1868.workers.dev",  # 通用代理 Worker 地址
+            "worker_url": "https://wai.dzpp.uk",  # 通用代理 Worker 地址
             "source_index": 6,  # M3U_SOURCE_7 对应的索引（从0开始，所以M3U_SOURCE_7是索引6）
             "new_group_name": "大陆以外",  # 新的分组名称
             # 可选：可以添加需要代理的特定域名，为空则代理所有
