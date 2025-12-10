@@ -94,10 +94,10 @@ def get_config():
             "group_title": "更新时间",
             "fixed_link": "https://zhanglianyu.oss-cn-beijing.aliyuncs.com/new.mp4"
         },
-        # !!! 新增：咪咕体育分组处理配置 !!!
+        # !!! 修改后的咪咕体育分组处理配置 !!!
         "migu_sports": {
-            "source_index": 3,  # 从源4获取（假设是M3U_SOURCE_4）
-            "channel_prefix": "咪咕体育-",  # 要匹配的频道名前缀
+            "source_index": 3,  # 从源4获取（M3U_SOURCE_4）
+            "channel_pattern": r"咪咕体育-\d{8}",  # 使用正则匹配
             "groups": {
                 "today": "今日咪咕",
                 "yesterday": "咪咕体育回看", 
@@ -105,7 +105,7 @@ def get_config():
                 "other": "咪咕体育其他"
             }
         },
-        # 频道名称映射表 (解决"吉林都市"和"吉视都市"匹配问题)
+        # 频道名称映射表
         "channel_name_mapping": {
             "吉视都市": ["吉林都市", "吉视都市", "吉林电视台都市频道"],
             "吉视生活": ["吉林生活", "吉视生活", "吉林电视台生活频道"],
@@ -132,8 +132,8 @@ def normalize_channel_name(channel_name, channel_mapping):
     return channel_name
 
 def parse_migu_date(channel_name):
-    """解析咪咕体育频道名称中的日期"""
-    # 匹配"咪咕体育-YYYYMMDD"格式
+    """解析咪咕体育频道名称中的日期 - 改进版本"""
+    # 匹配"咪咕体育-YYYYMMDD"格式（可能后面有其他内容）
     match = re.search(r'咪咕体育-(\d{8})', channel_name)
     if match:
         date_str = match.group(1)
@@ -159,6 +159,21 @@ def classify_migu_channel(channel_name, beijing_date):
         return "tomorrow"
     else:
         return "other"
+
+def extract_channel_name_from_extinf(line):
+    """从#EXTINF行提取频道名称 - 改进版本，处理#genre#等情况"""
+    if ',' not in line:
+        return line.strip()
+    
+    # 分割逗号，取最后一个部分
+    parts = line.split(',')
+    channel_info = parts[-1].strip()
+    
+    # 如果包含#genre#，取前面的部分作为频道名
+    if '#genre#' in channel_info:
+        channel_info = channel_info.split('#genre#')[0].strip()
+    
+    return channel_info
 
 # ==================== 核心功能函数 ====================
 def download_m3u_files():
@@ -208,8 +223,9 @@ def extract_all_channels_from_m3u(file_path, source_index):
             line = lines[i]
             if line.startswith('#EXTINF'):
                 if ',' in line:
-                    channel_name = line.split(',')[-1].strip()
-
+                    # 使用改进的频道名提取函数
+                    channel_name = extract_channel_name_from_extinf(line)
+                    
                     # 提取group-title
                     group_match = re.search(r'group-title="([^"]*)"', line)
                     group_title = group_match.group(1) if group_match else ""
@@ -261,13 +277,14 @@ def extract_special_group_channels(all_channels):
     return special_channels
 
 def extract_migu_sports_channels(all_channels):
-    """提取并分类咪咕体育频道"""
+    """提取并分类咪咕体育频道 - 修复版本"""
     migu_config = CONFIG.get("migu_sports")
     if not migu_config:
+        logger.info("未配置咪咕体育分组")
         return {}
     
     source_index = migu_config["source_index"]
-    channel_prefix = migu_config["channel_prefix"]
+    channel_pattern = migu_config.get("channel_pattern", r"咪咕体育-\d{8}")
     groups = migu_config["groups"]
     
     beijing_time = get_beijing_time()
@@ -276,9 +293,22 @@ def extract_migu_sports_channels(all_channels):
     # 按分类存储频道
     classified_channels = defaultdict(list)
     
+    # 调试：记录从指定源找到的所有频道
+    source_channels = [c for c in all_channels if c['source'] == source_index]
+    logger.info(f"从源{source_index + 1}共找到 {len(source_channels)} 个频道")
+    
     # 从指定源中提取咪咕体育频道
+    migu_count = 0
     for channel in all_channels:
-        if channel['source'] == source_index and channel['name'].startswith(channel_prefix):
+        if channel['source'] != source_index:
+            continue
+            
+        # 调试：记录前几个频道名称
+        if migu_count < 5:
+            logger.debug(f"源{source_index + 1}频道示例: '{channel['name']}'")
+        
+        # 使用正则匹配咪咕体育频道
+        if re.search(channel_pattern, channel['name']):
             # 分类频道
             category = classify_migu_channel(channel['name'], beijing_time)
             group_name = groups.get(category, groups["other"])
@@ -296,15 +326,28 @@ def extract_migu_sports_channels(all_channels):
                 'link': channel['link'],
                 'extinf_line': new_extinf_line,
                 'source': channel['source'],
-                'category': category
+                'category': category,
+                'original_extinf': channel['extinf_line']  # 保存原始行用于调试
             })
+            migu_count += 1
     
     # 统计并记录日志
     total_migu = sum(len(channels) for channels in classified_channels.values())
     logger.info(f"从源{source_index + 1}找到 {total_migu} 个咪咕体育频道")
     
+    # 如果没有找到，添加详细调试信息
+    if total_migu == 0:
+        logger.warning(f"未找到匹配'{channel_pattern}'的频道")
+        logger.warning("请检查频道名称格式，示例应该包含: '咪咕体育-20251209'")
+        # 显示一些实际频道名用于调试
+        sample_names = [c['name'] for c in source_channels[:10]]
+        logger.warning(f"实际频道名前10个示例: {sample_names}")
+    
     for group_name, channels in classified_channels.items():
         logger.info(f"  - {group_name}: {len(channels)} 个频道")
+        # 显示每个分组的前几个频道
+        for i, channel in enumerate(channels[:3]):
+            logger.debug(f"    {i+1}. {channel['name']}")
     
     return classified_channels
 
@@ -325,19 +368,19 @@ def extract_target_channels():
         for i in range(len(lines) - 1):
             line = lines[i]
             if line.startswith('#EXTINF'):
-                if ',' in line:
-                    channel_name = line.split(',')[-1].strip()
-                    group_match = re.search(r'group-title="([^"]*)"', line)
-                    group_title = group_match.group(1) if group_match else ""
+                # 使用改进的频道名提取函数
+                channel_name = extract_channel_name_from_extinf(line)
+                group_match = re.search(r'group-title="([^"]*)"', line)
+                group_title = group_match.group(1) if group_match else ""
 
-                    if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
-                        link = lines[i + 1].strip()
-                        target_channels.append({
-                            'name': channel_name,
-                            'group': group_title,
-                            'link': link,
-                            'extinf_line': line
-                        })
+                if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                    link = lines[i + 1].strip()
+                    target_channels.append({
+                        'name': channel_name,
+                        'group': group_title,
+                        'link': link,
+                        'extinf_line': line
+                    })
 
         logger.info(f"从目标文件中读取了 {len(target_channels)} 个待更新频道")
 
@@ -452,7 +495,7 @@ def update_target_file(all_channels, target_channels, special_channels, migu_cha
             
             # 处理普通行
             if line.startswith('#EXTINF'):
-                channel_name = line.split(',')[-1].strip() if ',' in line else ""
+                channel_name = extract_channel_name_from_extinf(line)
                 group_match = re.search(r'group-title="([^"]*)"', line)
                 group_title = group_match.group(1) if group_match else ""
 
