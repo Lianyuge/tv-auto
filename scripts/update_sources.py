@@ -7,6 +7,7 @@ import logging
 import time
 import base64
 import shutil
+import urllib.parse
 from logging.handlers import RotatingFileHandler
 from collections import defaultdict
 
@@ -122,6 +123,15 @@ def get_config():
             "worker_url": "https://crimson-sound-09ba.lianyu1868.workers.dev/",  # 你的 Cloudflare Worker 地址
             "access_key": "Ff905113",  # 访问密钥，与 Worker 中的 VALID_KEY 一致
             "encryption_key": "Ff905113%"  # 加密密钥，与 Worker 中的 decryptionKey 一致
+        },
+        # ==================== 海外频道代理配置 ====================
+        "overseas_proxy": {
+            "enabled": True,  # 是否启用海外频道代理
+            "worker_url": "https://royal-morning-52a8.lianyu1868.workers.dev/",  # 通用代理 Worker 地址
+            "source_index": 6,  # M3U_SOURCE_7 对应的索引（从0开始，所以M3U_SOURCE_7是索引6）
+            "new_group_name": "大陆以外",  # 新的分组名称
+            # 可选：可以添加需要代理的特定域名，为空则代理所有
+            "proxy_domains": []  # 例如: ["example.com", "iptv-server.com"]
         }
     }
 
@@ -263,6 +273,95 @@ def extract_all_channels_from_m3u(file_path, source_index):
     except Exception as e:
         logger.error(f"解析文件 {file_path} 时出错: {e}")
 
+    return channels
+
+def extract_and_proxy_overseas_channels(file_path, source_index):
+    """从指定源文件提取频道并应用海外代理"""
+    overseas_config = CONFIG.get("overseas_proxy", {})
+    
+    if not overseas_config.get("enabled", False):
+        return []
+    
+    target_source_index = overseas_config.get("source_index", 6)
+    if source_index != target_source_index:
+        return []
+    
+    new_group_name = overseas_config.get("new_group_name", "大陆以外")
+    worker_url = overseas_config.get("worker_url", "")
+    proxy_domains = overseas_config.get("proxy_domains", [])
+    
+    if not worker_url:
+        logger.warning("海外代理已启用但未配置 worker_url")
+        return []
+    
+    channels = []
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        
+        for i in range(len(lines) - 1):
+            line = lines[i]
+            if line.startswith('#EXTINF'):
+                if ',' in line:
+                    # 提取频道名称
+                    channel_name = extract_channel_name_from_extinf(line)
+                    
+                    # 提取原始group-title
+                    group_match = re.search(r'group-title="([^"]*)"', line)
+                    original_group_title = group_match.group(1) if group_match else ""
+                    
+                    if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                        original_link = lines[i + 1].strip()
+                        
+                        # 检查是否需要代理（如果配置了proxy_domains则检查，否则全部代理）
+                        should_proxy = True
+                        if proxy_domains:
+                            should_proxy = any(domain in original_link for domain in proxy_domains)
+                        
+                        final_link = original_link
+                        if should_proxy and original_link.startswith('http'):
+                            try:
+                                # 对原始链接进行 URL 编码
+                                encoded_url = urllib.parse.quote(original_link, safe='')
+                                # 构建代理链接
+                                proxy_link = f"{worker_url}/?url={encoded_url}"
+                                final_link = proxy_link
+                                logger.debug(f"为海外频道应用代理: {channel_name[:30]}...")
+                            except Exception as e:
+                                logger.warning(f"处理海外代理链接失败 {channel_name}: {e}")
+                        
+                        # 构建新的 EXTINF 行，使用新的分组名称
+                        if 'group-title=' in line:
+                            new_extinf_line = re.sub(
+                                r'group-title="[^"]*"',
+                                f'group-title="{new_group_name}"',
+                                line
+                            )
+                        else:
+                            # 如果没有group-title，添加一个
+                            new_extinf_line = f'{line} group-title="{new_group_name}"'
+                        
+                        channels.append({
+                            'name': channel_name,
+                            'group': new_group_name,
+                            'original_group': original_group_title,
+                            'link': final_link,
+                            'extinf_line': new_extinf_line,
+                            'source': source_index,
+                            'is_overseas': True,
+                            'original_link': original_link  # 保存原始链接用于调试
+                        })
+        
+        logger.info(f"从海外源提取了 {len(channels)} 个频道，已应用代理并分组到 '{new_group_name}'")
+        if channels:
+            logger.debug(f"海外频道示例: {channels[0]['name'][:50]}... -> {channels[0]['link'][:50]}...")
+    
+    except Exception as e:
+        logger.error(f"解析海外源文件 {file_path} 时出错: {e}", exc_info=True)
+    
     return channels
 
 def extract_migu_sports_channels_from_file(file_path, source_index):
@@ -530,8 +629,11 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
 
     return None
 
-def update_target_file(all_channels, target_channels, special_channels, migu_channels):
+def update_target_file(all_channels, target_channels, special_channels, migu_channels, overseas_channels=None):
     """更新目标文件中的链接"""
+    if overseas_channels is None:
+        overseas_channels = []
+    
     try:
         logger.info("开始更新目标文件 index.html ...")
 
@@ -563,6 +665,12 @@ def update_target_file(all_channels, target_channels, special_channels, migu_cha
         # 添加更新时间分组标题
         update_group_name = CONFIG["update_channel"]["group_title"]
         special_group_titles.append(f"# {update_group_name}分组")
+        
+        # 添加海外频道分组标题
+        overseas_config = CONFIG.get("overseas_proxy", {})
+        if overseas_config.get("enabled", False):
+            overseas_group_name = overseas_config.get("new_group_name", "大陆以外")
+            special_group_titles.append(f"# {overseas_group_name}分组")
         
         # 跟踪是否在特殊分组区域
         in_special_group = False
@@ -674,6 +782,18 @@ def update_target_file(all_channels, target_channels, special_channels, migu_cha
                         updated_count += 1
                     new_lines.append("")
         
+        # 添加海外频道分组
+        if overseas_channels:
+            overseas_config = CONFIG.get("overseas_proxy", {})
+            overseas_group_name = overseas_config.get("new_group_name", "大陆以外")
+            new_lines.append(f"# {overseas_group_name}分组")
+            for channel in overseas_channels:
+                new_lines.append(channel['extinf_line'])
+                new_lines.append(channel['link'])
+                logger.info(f"添加海外频道: '{channel['name']}' [{channel['group']}]")
+                updated_count += 1
+            new_lines.append("")
+        
         # 添加更新时间频道（放在最最后）
         beijing_time = get_beijing_time()
         beijing_time_str = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -731,19 +851,28 @@ def main():
 
         # 5. 从所有源文件中提取频道信息
         all_channels = []
+        overseas_channels = []  # 单独存储海外频道
+        
         for source_index, file_path in enumerate(downloaded_files):
             channels = extract_all_channels_from_m3u(file_path, source_index)
             all_channels.extend(channels)
             logger.info(f"从源{source_index + 1}解析出 {len(channels)} 个频道")
+            
+            # 提取并处理海外频道（从特定源）
+            overseas_config = CONFIG.get("overseas_proxy", {})
+            if overseas_config.get("enabled", False) and source_index == overseas_config.get("source_index", 6):
+                oversea_chs = extract_and_proxy_overseas_channels(file_path, source_index)
+                overseas_channels.extend(oversea_chs)
+                logger.info(f"从海外源{source_index + 1}提取了 {len(oversea_chs)} 个频道到'大陆以外'分组")
 
         # 6. 提取特殊分组的频道
         special_channels = extract_special_group_channels(all_channels)
         
         # 7. 提取并分类咪咕体育频道（使用新方法）
         migu_channels = extract_migu_sports_channels(all_channels, downloaded_files)
-
-        # 8. 更新目标文件
-        update_target_file(all_channels, target_channels, special_channels, migu_channels)
+        
+        # 8. 更新目标文件（将海外频道作为特殊分组添加到文件末尾）
+        update_target_file(all_channels, target_channels, special_channels, migu_channels, overseas_channels)
 
         # 9. 清理下载的临时源文件（新增步骤）
         try:
