@@ -97,7 +97,7 @@ def get_config():
         # !!! 修改后的咪咕体育分组处理配置 !!!
         "migu_sports": {
             "source_index": 3,  # 从源4获取（M3U_SOURCE_4）
-            "channel_pattern": r"咪咕体育-\d{8}",  # 使用正则匹配
+            "migu_pattern": r"咪咕体育-\d{8}",  # 匹配分组标题
             "groups": {
                 "today": "今日咪咕",
                 "yesterday": "咪咕体育回看", 
@@ -131,10 +131,10 @@ def normalize_channel_name(channel_name, channel_mapping):
             return standard_name
     return channel_name
 
-def parse_migu_date(channel_name):
-    """解析咪咕体育频道名称中的日期 - 改进版本"""
-    # 匹配"咪咕体育-YYYYMMDD"格式（可能后面有其他内容）
-    match = re.search(r'咪咕体育-(\d{8})', channel_name)
+def parse_migu_date_from_header(header_line):
+    """从咪咕体育分组标题行提取日期"""
+    # 匹配"咪咕体育-YYYYMMDD"格式
+    match = re.search(r'咪咕体育-(\d{8})', header_line)
     if match:
         date_str = match.group(1)
         try:
@@ -143,9 +143,8 @@ def parse_migu_date(channel_name):
             return None
     return None
 
-def classify_migu_channel(channel_name, beijing_date):
+def classify_migu_date(channel_date, beijing_date):
     """根据日期对咪咕体育频道进行分类"""
-    channel_date = parse_migu_date(channel_name)
     if not channel_date:
         return "other"
     
@@ -161,17 +160,13 @@ def classify_migu_channel(channel_name, beijing_date):
         return "other"
 
 def extract_channel_name_from_extinf(line):
-    """从#EXTINF行提取频道名称 - 改进版本，处理#genre#等情况"""
+    """从#EXTINF行提取频道名称"""
     if ',' not in line:
         return line.strip()
     
     # 分割逗号，取最后一个部分
     parts = line.split(',')
     channel_info = parts[-1].strip()
-    
-    # 如果包含#genre#，取前面的部分作为频道名
-    if '#genre#' in channel_info:
-        channel_info = channel_info.split('#genre#')[0].strip()
     
     return channel_info
 
@@ -223,7 +218,7 @@ def extract_all_channels_from_m3u(file_path, source_index):
             line = lines[i]
             if line.startswith('#EXTINF'):
                 if ',' in line:
-                    # 使用改进的频道名提取函数
+                    # 提取频道名称
                     channel_name = extract_channel_name_from_extinf(line)
                     
                     # 提取group-title
@@ -237,13 +232,120 @@ def extract_all_channels_from_m3u(file_path, source_index):
                             'group': group_title,
                             'link': link,
                             'extinf_line': line,
-                            'source': source_index
+                            'source': source_index,
+                            'line_index': i  # 添加行索引用于调试
                         })
 
     except Exception as e:
         logger.error(f"解析文件 {file_path} 时出错: {e}")
 
     return channels
+
+def extract_migu_sports_channels_from_file(file_path, source_index):
+    """从源文件直接提取咪咕体育频道（全新解析逻辑）"""
+    migu_config = CONFIG.get("migu_sports")
+    if not migu_config or source_index != migu_config["source_index"]:
+        return {}
+    
+    beijing_time = get_beijing_time()
+    groups = migu_config["groups"]
+    
+    # 按分类存储频道
+    classified_channels = defaultdict(list)
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        logger.info(f"开始解析源文件: {os.path.basename(file_path)}，共 {len(lines)} 行")
+        
+        current_migu_date = None
+        current_category = None
+        current_group_name = None
+        
+        i = 0
+        migu_channels_found = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # 检查是否是咪咕体育分组标题行
+            migu_match = re.search(r'咪咕体育-(\d{8})', line)
+            if migu_match and '#genre#' in line:
+                date_str = migu_match.group(1)
+                try:
+                    current_migu_date = datetime.strptime(date_str, '%Y%m%d').date()
+                    current_category = classify_migu_date(current_migu_date, beijing_time)
+                    current_group_name = groups.get(current_category, groups["other"])
+                    
+                    logger.info(f"发现咪咕体育分组: {line} -> 日期: {current_migu_date}, 分类: {current_category}, 分组: {current_group_name}")
+                    i += 1
+                    continue
+                except ValueError:
+                    logger.warning(f"咪咕体育日期解析失败: {line}")
+                    current_migu_date = None
+            
+            # 如果当前有活跃的咪咕分组，检查下面的频道
+            if current_migu_date and line.startswith('#EXTINF'):
+                # 提取频道信息
+                if ',' in line:
+                    channel_name = extract_channel_name_from_extinf(line)
+                    
+                    if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                        link = lines[i + 1].strip()
+                        
+                        # 构建新的EXTINF行，添加正确的分组
+                        if 'group-title=' in line:
+                            new_extinf_line = re.sub(
+                                r'group-title="[^"]*"',
+                                f'group-title="{current_group_name}"',
+                                line
+                            )
+                        else:
+                            # 如果没有group-title，添加一个
+                            new_extinf_line = f'{line} group-title="{current_group_name}"'
+                        
+                        classified_channels[current_group_name].append({
+                            'name': channel_name,
+                            'group': current_group_name,
+                            'link': link,
+                            'extinf_line': new_extinf_line,
+                            'source': source_index,
+                            'migu_date': current_migu_date,
+                            'category': current_category
+                        })
+                        
+                        migu_channels_found += 1
+                        
+                        if migu_channels_found <= 5:  # 只记录前5个频道
+                            logger.debug(f"  咪咕频道: {channel_name} -> {current_group_name}")
+                
+                i += 2  # 跳过EXTINF行和链接行
+                continue
+            
+            # 重置当前分组状态（如果遇到新的分组标题或其他内容）
+            if line.startswith('#') and ('体育' in line or 'genre' in line) and current_migu_date:
+                logger.debug(f"重置咪咕分组状态，遇到新行: {line[:50]}...")
+                current_migu_date = None
+            
+            i += 1
+        
+        logger.info(f"从文件 {os.path.basename(file_path)} 解析出 {migu_channels_found} 个咪咕体育频道")
+        
+        # 统计并记录日志
+        total_migu = sum(len(channels) for channels in classified_channels.values())
+        logger.info(f"总计分类咪咕频道: {total_migu} 个")
+        
+        for group_name, channels in classified_channels.items():
+            logger.info(f"  - {group_name}: {len(channels)} 个频道")
+            if channels:
+                logger.debug(f"    示例: {channels[0]['name'][:50]}...")
+    
+    except Exception as e:
+        logger.error(f"解析咪咕体育文件 {file_path} 时出错: {e}", exc_info=True)
+    
+    return dict(classified_channels)
 
 def extract_special_group_channels(all_channels):
     """提取特殊分组的频道（冰茶体育）"""
@@ -276,80 +378,28 @@ def extract_special_group_channels(all_channels):
 
     return special_channels
 
-def extract_migu_sports_channels(all_channels):
-    """提取并分类咪咕体育频道 - 修复版本"""
+def extract_migu_sports_channels(all_channels, downloaded_files):
+    """整合所有源的咪咕体育频道"""
     migu_config = CONFIG.get("migu_sports")
     if not migu_config:
         logger.info("未配置咪咕体育分组")
         return {}
     
     source_index = migu_config["source_index"]
-    channel_pattern = migu_config.get("channel_pattern", r"咪咕体育-\d{8}")
-    groups = migu_config["groups"]
     
-    beijing_time = get_beijing_time()
-    beijing_date = beijing_time.date()
+    # 找到对应的下载文件
+    migu_file = None
+    for file_path in downloaded_files:
+        if f"source_{source_index + 1}_" in file_path:
+            migu_file = file_path
+            break
     
-    # 按分类存储频道
-    classified_channels = defaultdict(list)
+    if not migu_file:
+        logger.warning(f"未找到源{source_index + 1}的下载文件")
+        return {}
     
-    # 调试：记录从指定源找到的所有频道
-    source_channels = [c for c in all_channels if c['source'] == source_index]
-    logger.info(f"从源{source_index + 1}共找到 {len(source_channels)} 个频道")
-    
-    # 从指定源中提取咪咕体育频道
-    migu_count = 0
-    for channel in all_channels:
-        if channel['source'] != source_index:
-            continue
-            
-        # 调试：记录前几个频道名称
-        if migu_count < 5:
-            logger.debug(f"源{source_index + 1}频道示例: '{channel['name']}'")
-        
-        # 使用正则匹配咪咕体育频道
-        if re.search(channel_pattern, channel['name']):
-            # 分类频道
-            category = classify_migu_channel(channel['name'], beijing_time)
-            group_name = groups.get(category, groups["other"])
-            
-            # 修改分组名称
-            new_extinf_line = re.sub(
-                r'group-title="[^"]*"',
-                f'group-title="{group_name}"',
-                channel['extinf_line']
-            )
-            
-            classified_channels[group_name].append({
-                'name': channel['name'],
-                'group': group_name,
-                'link': channel['link'],
-                'extinf_line': new_extinf_line,
-                'source': channel['source'],
-                'category': category,
-                'original_extinf': channel['extinf_line']  # 保存原始行用于调试
-            })
-            migu_count += 1
-    
-    # 统计并记录日志
-    total_migu = sum(len(channels) for channels in classified_channels.values())
-    logger.info(f"从源{source_index + 1}找到 {total_migu} 个咪咕体育频道")
-    
-    # 如果没有找到，添加详细调试信息
-    if total_migu == 0:
-        logger.warning(f"未找到匹配'{channel_pattern}'的频道")
-        logger.warning("请检查频道名称格式，示例应该包含: '咪咕体育-20251209'")
-        # 显示一些实际频道名用于调试
-        sample_names = [c['name'] for c in source_channels[:10]]
-        logger.warning(f"实际频道名前10个示例: {sample_names}")
-    
-    for group_name, channels in classified_channels.items():
-        logger.info(f"  - {group_name}: {len(channels)} 个频道")
-        # 显示每个分组的前几个频道
-        for i, channel in enumerate(channels[:3]):
-            logger.debug(f"    {i+1}. {channel['name']}")
-    
-    return classified_channels
+    # 使用新函数从文件直接解析
+    return extract_migu_sports_channels_from_file(migu_file, source_index)
 
 def extract_target_channels():
     """从目标文件中提取所有频道信息"""
@@ -368,7 +418,7 @@ def extract_target_channels():
         for i in range(len(lines) - 1):
             line = lines[i]
             if line.startswith('#EXTINF'):
-                # 使用改进的频道名提取函数
+                # 提取频道名称
                 channel_name = extract_channel_name_from_extinf(line)
                 group_match = re.search(r'group-title="([^"]*)"', line)
                 group_title = group_match.group(1) if group_match else ""
@@ -633,8 +683,8 @@ def main():
         # 6. 提取特殊分组的频道
         special_channels = extract_special_group_channels(all_channels)
         
-        # 7. 提取并分类咪咕体育频道
-        migu_channels = extract_migu_sports_channels(all_channels)
+        # 7. 提取并分类咪咕体育频道（使用新方法）
+        migu_channels = extract_migu_sports_channels(all_channels, downloaded_files)
 
         # 8. 更新目标文件
         update_target_file(all_channels, target_channels, special_channels, migu_channels)
