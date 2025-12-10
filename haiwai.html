@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>海外TV直播源 - 自动更新</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --accent-color: #e74c3c;
+            --background-color: #ecf0f1;
+        }
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            padding: 40px 20px;
+            margin-bottom: 30px;
+            border-radius: 15px;
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .header h1 {
+            color: var(--primary-color);
+            font-size: 2.8em;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, var(--secondary-color), var(--accent-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p {
+            color: #7f8c8d;
+            font-size: 1.2em;
+        }
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 25px;
+            margin: 30px 0;
+            flex-wrap: wrap;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.08);
+            text-align: center;
+            min-width: 180px;
+            transition: transform 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: var(--secondary-color);
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .actions {
+            text-align: center;
+            margin: 40px 0;
+        }
+        .btn {
+            display: inline-block;
+            padding: 14px 35px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 1.1em;
+            margin: 0 10px 15px;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: linear-gradient(45deg, var(--secondary-color), #2980b9);
+            color: white;
+            box-shadow: 0 4px 15px rgba(52, 152, 219, 0.3);
+        }
+        .btn-secondary {
+            background: linear-gradient(45deg, #95a5a6, #7f8c8d);
+            color: white;
+            box-shadow: 0 4px 15px rgba(149, 165, 166, 0.3);
+        }
+        .btn-success {
+            background: linear-gradient(45deg, #2ecc71, #27ae60);
+            color: white;
+            box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3);
+        }
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        }
+        .groups-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 30px;
+            margin-top: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .groups-title {
+            text-align: center;
+            color: var(--primary-color);
+            font-size: 1.8em;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid var(--secondary-color);
+        }
+        .groups {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+            gap: 25px;
+        }
+        .group-card {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        .group-card:hover {
+            transform: translateY(-8px);
+            border-color: var(--secondary-color);
+            box-shadow: 0 12px 25px rgba(0,0,0,0.15);
+        }
+        .group-header {
+            background: linear-gradient(45deg, var(--primary-color), #34495e);
+            color: white;
+            padding: 18px 25px;
+            font-size: 1.3em;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .channel-list {
+            padding: 20px;
+            max-height: 450px;
+            overflow-y: auto;
+        }
+        .channel-item {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s ease;
+        }
+        .channel-item:hover {
+            background: #f8f9fa;
+        }
+        .channel-item:last-child {
+            border-bottom: none;
+        }
+        .channel-name {
+            font-weight: 600;
+            font-size: 1.1em;
+            color: #2c3e50;
+        }
+        .play-btn {
+            background: linear-gradient(45deg, var(--accent-color), #c0392b);
+            color: white;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.95em;
+            display: inline-block;
+            transition: all 0.2s ease;
+        }
+        .play-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 10px rgba(231, 76, 60, 0.3);
+        }
+        .update-time {
+            text-align: center;
+            margin-top: 50px;
+            padding: 25px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            color: #666;
+        }
+        .footer {
+            text-align: center;
+            padding: 30px 0;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9em;
+        }
+        .search-box {
+            margin: 25px 0;
+            text-align: center;
+        }
+        .search-input {
+            padding: 15px 25px;
+            width: 80%;
+            max-width: 500px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1.1em;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            outline: none;
+        }
+        .tag {
+            display: inline-block;
+            padding: 5px 12px;
+            background: var(--secondary-color);
+            color: white;
+            border-radius: 20px;
+            font-size: 0.8em;
+            margin-left: 10px;
+        }
+        .mobile-warning {
+            display: none;
+            background: #fff3cd;
+            color: #856404;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        @media (max-width: 768px) {
+            .groups {
+                grid-template-columns: 1fr;
+            }
+            .stat-card {
+                min-width: 140px;
+            }
+            .btn {
+                display: block;
+                margin: 10px auto;
+                width: 90%;
+            }
+            .header h1 {
+                font-size: 2em;
+            }
+            .mobile-warning {
+                display: block;
+            }
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-satellite-dish"></i> 海外TV直播源</h1>
+            <p>每日自动更新 • 全球频道收录 • 高清流畅播放</p>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-number">0</div>
+                    <div class="stat-label">总频道数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">0</div>
+                    <div class="stat-label">分组数量</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">12-10</div>
+                    <div class="stat-label">更新日期</div>
+                </div>
+            </div>
+            
+            <div class="mobile-warning">
+                <i class="fas fa-mobile-alt"></i> 手机用户建议使用支持M3U的播放器应用
+            </div>
+            
+            <div class="actions">
+                <a href="haiwai.m3u" class="btn btn-primary" download>
+                    <i class="fas fa-download"></i> 下载M3U文件
+                </a>
+                <a href="haiwai-raw.html" class="btn btn-secondary">
+                    <i class="fas fa-code"></i> 查看原始内容
+                </a>
+                <button onclick="copyPlaylist()" class="btn btn-success">
+                    <i class="fas fa-copy"></i> 复制播放链接
+                </button>
+            </div>
+        </div>
+        
+        <div class="search-box">
+            <input type="text" id="searchInput" class="search-input" placeholder="🔍 搜索频道名称..." onkeyup="searchChannels()">
+        </div>
+        
+        <div class="groups-container">
+            <h2 class="groups-title">
+                <i class="fas fa-list"></i> 频道分类列表
+                <span class="tag">按分组排序</span>
+            </h2>
+            
+            <div class="groups">
+
+            </div>
+        </div>
+        
+        <div class="update-time">
+            <h3><i class="fas fa-history"></i> 更新信息</h3>
+            <p><strong>最后更新时间：</strong> 2025-12-10 13:54:43</p>
+            <p><strong>数据来源：</strong> <a href="https://php.946985.filegear-sg.me/jackTV.m3u" target="_blank">原始M3U链接</a></p>
+            <p><strong>自动更新：</strong> 每日UTC时间00:00自动更新</p>
+            <p><strong>使用说明：</strong> 点击"播放"按钮可在支持M3U的播放器中打开</p>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <p>🚀 本页面由 GitHub Actions 自动生成 | 仅供技术学习交流使用</p>
+        <p>⏰ 下次自动更新时间：24小时后 | 📊 总数据量：0个频道</p>
+        <p>⚠️ 请遵守当地法律法规，合理使用网络资源</p>
+    </div>
+    
+    <script>
+        // 搜索频道功能
+        function searchChannels() {
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toLowerCase();
+            const channelItems = document.querySelectorAll('.channel-item');
+            
+            channelItems.forEach(item => {
+                const channelName = item.getAttribute('data-channel');
+                if (channelName.includes(filter)) {
+                    item.style.display = 'flex';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            
+            // 隐藏没有可见频道的分组
+            document.querySelectorAll('.group-card').forEach(group => {
+                const visibleChannels = group.querySelectorAll('.channel-item[style="display: flex;"]');
+                group.style.display = visibleChannels.length > 0 ? 'block' : 'none';
+            });
+        }
+        
+        // 复制播放列表链接
+        function copyPlaylist() {
+            const playlistUrl = window.location.origin + window.location.pathname.replace('haiwai.html', 'haiwai.m3u');
+            navigator.clipboard.writeText(playlistUrl).then(() => {
+                alert('播放列表链接已复制到剪贴板！\n' + playlistUrl);
+            });
+        }
+        
+        // 跟踪播放点击
+        function trackPlay(channelName) {
+            console.log('播放频道:', channelName);
+            // 这里可以添加统计代码
+        }
+        
+        // 自动刷新页面（每30分钟检查一次）
+        setTimeout(() => {
+            window.location.reload();
+        }, 30 * 60 * 1000);
+        
+        // 页面加载完成后添加动画
+        document.addEventListener('DOMContentLoaded', () => {
+            const cards = document.querySelectorAll('.group-card');
+            cards.forEach((card, index) => {
+                card.style.animationDelay = (index * 0.1) + 's';
+                card.style.animation = 'fadeInUp 0.5s ease forwards';
+            });
+            
+            // 添加CSS动画
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes fadeInUp {
+                    from { opacity: 0; transform: translateY(20px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+            `;
+            document.head.appendChild(style);
+        });
+        
+        // 显示当前时间
+        function updateTime() {
+            const now = new Date();
+            const timeString = now.toLocaleString('zh-CN', { 
+                year: 'numeric', 
+                month: '2-digit', 
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false 
+            });
+            console.log('当前时间:', timeString);
+        }
+        
+        // 每5秒更新一次时间
+        setInterval(updateTime, 5000);
+    </script>
+</body>
+</html>
