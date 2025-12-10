@@ -110,11 +110,14 @@ def get_config():
         },
         # 频道名称映射表
         "channel_name_mapping": {
-            "吉视都市": ["吉林都市", "吉视都市", "吉林电视台都市频道"],
-            "吉视生活": ["吉林生活", "吉视生活", "吉林电视台生活频道"],
-            "吉视影视": ["吉林影视", "吉视影视", "吉林电视台影视台"],
-            "吉视综艺": ["吉林综艺", "吉视综艺", "吉林电视台综艺频道"],
+            "吉视都市": ["吉林都市", "吉视都市", "吉林电视台都市频道", "吉林都市频道"],
+            "吉视生活": ["吉林生活", "吉视生活", "吉林电视台生活频道", "吉林生活频道"],
+            "吉视影视": ["吉林影视", "吉视影视", "吉林电视台影视台", "吉林影视台"],
+            "吉视综艺": ["吉林综艺", "吉视综艺", "吉林电视台综艺频道", "吉林综艺频道"],
             "吉视乡村": ["吉林乡村", "吉林电视台乡村频道", "吉林乡村频道"],
+            "吉林东北": ["吉林东北", "吉视东北", "吉林电视台东北频道", "东北频道"],
+            "吉林新闻": ["吉林新闻", "吉视新闻", "吉林电视台新闻频道", "新闻频道"],
+            "吉林公共": ["吉林公共", "吉视公共", "吉林电视台公共频道", "公共频道"],
         },
         # ==================== Cloudflare Worker 代理配置 ====================
         # !!! 重要：以下三个值必须与 Cloudflare Worker 代码中的设置完全一致 !!!
@@ -204,6 +207,41 @@ def encrypt_url(url, key):
         logger.error(f"加密URL时出错: {e}")
         return None
 
+def detect_file_format(file_path):
+    """
+    检测M3U文件格式
+    返回: 'standard' 标准格式, 'simple' 简化格式, 'unknown' 未知
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            first_lines = []
+            for _ in range(5):  # 读取前5行进行检测
+                line = f.readline()
+                if not line:
+                    break
+                first_lines.append(line.strip())
+        
+        # 检测标准格式
+        for line in first_lines:
+            if line.startswith('#EXTM3U'):
+                return 'standard'
+        
+        # 检测简化格式
+        for line in first_lines:
+            if line and not line.startswith('#') and ',' in line:
+                parts = line.split(',', 1)
+                if len(parts) == 2:
+                    # 检查第二部分是否是URL
+                    link = parts[1].strip()
+                    if link.startswith('http'):
+                        return 'simple'
+        
+        return 'unknown'
+    
+    except Exception as e:
+        logger.error(f"检测文件格式时出错 {file_path}: {e}")
+        return 'unknown'
+
 # ==================== 核心功能函数 ====================
 def download_m3u_files():
     """下载所有m3u文件"""
@@ -273,6 +311,99 @@ def extract_all_channels_from_m3u(file_path, source_index):
     except Exception as e:
         logger.error(f"解析文件 {file_path} 时出错: {e}")
 
+    return channels
+
+def extract_simple_format_channels(file_path, source_index, default_group="吉林本地"):
+    """
+    解析简化格式的M3U文件（频道名,链接）
+    返回标准化的频道列表
+    """
+    channels = []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        logger.info(f"开始解析简化格式文件 {os.path.basename(file_path)}，共 {len(lines)} 行")
+        
+        seen_channels = set()  # 避免重复频道（基于标准化名称）
+        line_count = 0
+        parsed_count = 0
+        
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # 跳过注释行
+            if line.startswith('#'):
+                continue
+            
+            if ',' in line:
+                parts = line.split(',', 1)
+                if len(parts) == 2:
+                    channel_name, link = parts[0].strip(), parts[1].strip()
+                    line_count += 1
+                    
+                    # 验证链接
+                    if not link.startswith('http'):
+                        logger.debug(f"第{line_num}行: 跳过无效链接: {line[:50]}...")
+                        continue
+                    
+                    # 标准化频道名称
+                    normalized_name = normalize_channel_name(
+                        channel_name, 
+                        CONFIG.get("channel_name_mapping", {})
+                    )
+                    
+                    # 使用标准化名称作为去重键
+                    channel_key = f"{normalized_name}_{source_index}"
+                    
+                    # 避免重复频道（相同名称和源）
+                    if channel_key in seen_channels:
+                        logger.debug(f"第{line_num}行: 跳过重复频道: {normalized_name}")
+                        continue
+                    
+                    seen_channels.add(channel_key)
+                    
+                    # 构建标准的EXTINF行（包含必要的属性）
+                    extinf_line = f'#EXTINF:-1 group-title="{default_group}",{normalized_name}'
+                    
+                    # 如果是吉林频道，添加tvg-logo
+                    if "吉林" in normalized_name:
+                        # 简化版logo路径（根据名称生成）
+                        logo_name = normalized_name.replace("吉林", "吉视").replace("电视台", "").replace("频道", "")
+                        logo_url = f"https://tu.dzpp.uk/tv/{logo_name}.png"
+                        extinf_line = f'#EXTINF:-1 tvg-id="{normalized_name}" tvg-name="{normalized_name}" tvg-logo="{logo_url}" group-title="{default_group}",{normalized_name}'
+                    
+                    channels.append({
+                        'name': normalized_name,
+                        'group': default_group,
+                        'link': link,
+                        'extinf_line': extinf_line,
+                        'source': source_index,
+                        'original_name': channel_name,  # 保留原始名称用于调试
+                        'format': 'simple'  # 标记为简化格式
+                    })
+                    parsed_count += 1
+                    
+                    # 记录前几个解析的频道
+                    if parsed_count <= 3:
+                        logger.debug(f"  解析频道: {normalized_name} (原: {channel_name}) -> {link[:60]}...")
+        
+        logger.info(f"从简化格式中解析出 {parsed_count}/{line_count} 个频道（已去重）")
+        
+        # 记录统计信息
+        if channels:
+            logger.debug(f"频道示例: {channels[0]['name']} -> {channels[0]['link'][:60]}...")
+            
+            # 统计频道类型
+            channel_names = [ch['name'] for ch in channels]
+            unique_names = set(channel_names)
+            logger.info(f"共 {len(unique_names)} 个不同频道: {', '.join(sorted(unique_names)[:10])}{'...' if len(unique_names) > 10 else ''}")
+        
+    except Exception as e:
+        logger.error(f"解析简化格式文件 {file_path} 时出错: {e}", exc_info=True)
+    
     return channels
 
 def extract_and_proxy_overseas_channels(file_path, source_index):
@@ -608,6 +739,8 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
         for channel in all_channels:
             # 标准化源频道名称进行比较
             normalized_source_name = normalize_channel_name(channel['name'], CONFIG.get("channel_name_mapping", {}))
+            
+            # 增强匹配逻辑：支持部分匹配
             if (channel['group'] == group_title and
                     normalized_source_name == normalized_target_name and
                     channel['source'] == target_source):
@@ -616,8 +749,9 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
                     logger.debug(
                         f"名称映射匹配: 目标'{channel_name}' -> 源'{channel['name']}' (标准化为 '{normalized_target_name}')")
                 return channel
-
+    
     # 规则2: 其他分组从所有源中按顺序查找
+    # 首先尝试完全匹配
     for source_index in range(len(CONFIG["m3u_sources"])):
         for channel in all_channels:
             normalized_source_name = normalize_channel_name(channel['name'], CONFIG.get("channel_name_mapping", {}))
@@ -626,7 +760,21 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
                     logger.debug(
                         f"名称映射匹配: 目标'{channel_name}' -> 源'{channel['name']}' (标准化为 '{normalized_target_name}')")
                 return channel
-
+    
+    # 规则3: 尝试模糊匹配（如果完全匹配失败）
+    # 移除空格和标点符号进行比较
+    clean_target_name = re.sub(r'[\s\-_]+', '', normalized_target_name)
+    
+    for source_index in range(len(CONFIG["m3u_sources"])):
+        for channel in all_channels:
+            normalized_source_name = normalize_channel_name(channel['name'], CONFIG.get("channel_name_mapping", {}))
+            clean_source_name = re.sub(r'[\s\-_]+', '', normalized_source_name)
+            
+            # 模糊匹配：检查是否相互包含
+            if (clean_target_name in clean_source_name or clean_source_name in clean_target_name) and channel['source'] == source_index:
+                logger.debug(f"模糊匹配: 目标'{channel_name}' -> 源'{channel['name']}'")
+                return channel
+    
     return None
 
 def update_target_file(all_channels, target_channels, special_channels, migu_channels, overseas_channels=None):
@@ -854,7 +1002,26 @@ def main():
         overseas_channels = []  # 单独存储海外频道
         
         for source_index, file_path in enumerate(downloaded_files):
-            channels = extract_all_channels_from_m3u(file_path, source_index)
+            # 检测文件格式并选择合适的解析器
+            file_format = detect_file_format(file_path)
+            
+            if file_format == 'simple':
+                logger.info(f"检测到源{source_index + 1}为简化格式，使用简化格式解析器")
+                # 为简化格式指定默认分组（可以根据需要调整）
+                default_group = "吉林本地"  # 默认为吉林本地分组
+                
+                # 可以根据源索引指定不同的分组
+                if source_index == 8:  # M3U_SOURCE_9 (索引8)
+                    default_group = "吉林本地"
+                
+                channels = extract_simple_format_channels(file_path, source_index, default_group)
+            elif file_format == 'standard':
+                logger.info(f"检测到源{source_index + 1}为标准M3U格式")
+                channels = extract_all_channels_from_m3u(file_path, source_index)
+            else:
+                logger.warning(f"无法识别源{source_index + 1}的格式，尝试标准解析")
+                channels = extract_all_channels_from_m3u(file_path, source_index)
+            
             all_channels.extend(channels)
             logger.info(f"从源{source_index + 1}解析出 {len(channels)} 个频道")
             
