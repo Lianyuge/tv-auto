@@ -5,6 +5,8 @@ import os
 import sys
 import logging
 import time
+import base64
+import shutil
 from logging.handlers import RotatingFileHandler
 from collections import defaultdict
 
@@ -112,6 +114,14 @@ def get_config():
             "吉视影视": ["吉林影视", "吉视影视", "吉林电视台影视台"],
             "吉视综艺": ["吉林综艺", "吉视综艺", "吉林电视台综艺频道"],
             "吉视乡村": ["吉林乡村", "吉林电视台乡村频道", "吉林乡村频道"],
+        },
+        # ==================== Cloudflare Worker 代理配置 ====================
+        # !!! 重要：以下三个值必须与 Cloudflare Worker 代码中的设置完全一致 !!!
+        "proxy_config": {
+            "enabled": True,  # 是否启用代理（设为 False 则使用原始链接）
+            "worker_url": "https://crimson-sound-09ba.lianyu1868.workers.dev/",  # 你的 Cloudflare Worker 地址
+            "access_key": "Ff905113",  # 访问密钥，与 Worker 中的 VALID_KEY 一致
+            "encryption_key": "Ff905113%"  # 加密密钥，与 Worker 中的 decryptionKey 一致
         }
     }
 
@@ -169,6 +179,20 @@ def extract_channel_name_from_extinf(line):
     channel_info = parts[-1].strip()
     
     return channel_info
+
+def encrypt_url(url, key):
+    """加密URL（XOR + Base64），与 Cloudflare Worker 中的解密函数对应"""
+    try:
+        key_bytes = key.encode('utf-8')
+        url_bytes = url.encode('utf-8')
+        encrypted = bytearray()
+        for i in range(len(url_bytes)):
+            encrypted.append(url_bytes[i] ^ key_bytes[i % len(key_bytes)])
+        # 使用 urlsafe_b64encode 避免链接中出现特殊字符问题
+        return base64.urlsafe_b64encode(encrypted).decode('utf-8')
+    except Exception as e:
+        logger.error(f"加密URL时出错: {e}")
+        return None
 
 # ==================== 核心功能函数 ====================
 def download_m3u_files():
@@ -305,36 +329,30 @@ def extract_migu_sports_channels_from_file(file_path, source_index):
                         # 注意：原始文件没有tvg-id等属性，我们只添加必需的
                         extinf_line = f'#EXTINF:-1 group-title="{current_group_name}",{channel_name}'
                         
-                        # ========== 新增：加密原始链接并生成 Cloudflare Worker 代理链接 ==========
-                        import base64
-                        # ！！！！！！ 重要：以下两个值需要修改 ！！！！！！
-                        YOUR_WORKER_URL = "https://crimson-sound-09ba.lianyu1868.workers.dev"
-                        YOUR_SECRET_ACCESS_KEY = "Ff905113"  # 与 Worker 代码中的 VALID_KEY 一致
-                        ENCRYPTION_KEY = "Ff905113%"        # 与 Worker 代码中的 decryptionKey 一致
+                        # ==================== 处理咪咕链接：使用 Cloudflare Worker 代理 ====================
+                        final_link = link
+                        proxy_config = CONFIG.get("proxy_config", {})
                         
-                        # 简单的加密函数（XOR + Base64），与 Worker 中的解密对应
-                        def encrypt_url(url, key):
-                            """加密URL，使其在传输中不可读"""
-                            key_bytes = key.encode('utf-8')
-                            url_bytes = url.encode('utf-8')
-                            encrypted = bytearray()
-                            for i in range(len(url_bytes)):
-                                encrypted.append(url_bytes[i] ^ key_bytes[i % len(key_bytes)])
-                            # 使用 urlsafe_b64encode 避免链接中出现特殊字符问题
-                            return base64.urlsafe_b64encode(encrypted).decode('utf-8')
-                        
-                        # 生成加密令牌
-                        encrypted_token = encrypt_url(link, ENCRYPTION_KEY)
-                        # 构建最终的代理链接
-                        proxy_link = f"{YOUR_WORKER_URL}/?t={encrypted_token}&k={YOUR_SECRET_ACCESS_KEY}"
-                        logger.info(f"已将咪咕链接替换为代理链接: {channel_name[:30]}...")
-                        final_link = proxy_link
-                        # ========== 结束新增 ==========
+                        if proxy_config.get("enabled", False) and "migu.lifit.uk" in link:
+                            worker_url = proxy_config.get("worker_url", "")
+                            access_key = proxy_config.get("access_key", "")
+                            encryption_key = proxy_config.get("encryption_key", "")
+                            
+                            if worker_url and access_key and encryption_key:
+                                encrypted_token = encrypt_url(link, encryption_key)
+                                if encrypted_token:
+                                    final_link = f"{worker_url}/?t={encrypted_token}&k={access_key}"
+                                    logger.debug(f"已将咪咕链接替换为代理链接: {channel_name[:30]}...")
+                                else:
+                                    logger.warning(f"加密咪咕链接失败，使用原始链接: {channel_name}")
+                            else:
+                                logger.warning("Cloudflare Worker 配置不完整，使用原始咪咕链接")
+                        # ==================== 代理处理结束 ====================
                         
                         classified_channels[current_group_name].append({
                             'name': channel_name,
                             'group': current_group_name,
-                            'link': final_link,  # 这里存储的是加密后的代理链接
+                            'link': final_link,  # 这里存储的是处理后的链接（原始或代理）
                             'extinf_line': extinf_line,
                             'source': source_index,
                             'migu_date': current_migu_date,
@@ -727,7 +745,18 @@ def main():
         # 8. 更新目标文件
         update_target_file(all_channels, target_channels, special_channels, migu_channels)
 
-        # 9. 任务完成，输出统计
+        # 9. 清理下载的临时源文件（新增步骤）
+        try:
+            download_dir = CONFIG["download_dir"]
+            if os.path.exists(download_dir):
+                shutil.rmtree(download_dir)
+                logger.info(f"已清理临时下载目录: {download_dir}")
+            else:
+                logger.debug(f"临时下载目录不存在，无需清理: {download_dir}")
+        except Exception as e:
+            logger.warning(f"清理临时文件时出现错误: {e}")
+
+        # 10. 任务完成，输出统计
         end_time = time.time()
         duration = end_time - start_time
         logger.info("=" * 60)
