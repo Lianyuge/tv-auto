@@ -72,6 +72,28 @@ def get_config():
             "央视吉林": 0,
             "央视辽宁": 2,
         },
+        "gang_ao_tai_rules": {  # 新增港澳台规则
+            "enabled": True,
+            "source_index": 8,  # M3U_SOURCE_9对应索引8
+            "unified_group_name": "港澳台频道",  # 统一的分组名称
+            "group_patterns": [  # 匹配的分组名模式
+                r".*香港.*",
+                r".*澳门.*", 
+                r".*台湾.*",
+                r".*港澳.*",
+                r".*港台.*",
+                r".*凤凰卫视.*",
+                r".*TVB.*",
+                r".*翡翠.*",
+                r".*明珠.*",
+                r".*本港.*",
+                r".*国际台.*",
+                r".*无线.*",
+                r".*亚视.*",
+                r".*寰宇.*",
+                r".*星空.*"
+            ]
+        },
         "target_file": "index.html",
         "download_dir": "downloaded_sources",
         "special_groups": {
@@ -248,6 +270,23 @@ def is_jishi_channel(channel_name, group_title):
     normalized_name = normalize_channel_name(channel_name, CONFIG.get("channel_name_mapping", {}))
     for prefix in prefixes:
         if normalized_name.startswith(prefix):
+            return True
+    
+    return False
+
+def is_gang_ao_tai_group(group_title):
+    """判断是否为港澳台分组"""
+    gang_ao_tai_config = CONFIG.get("gang_ao_tai_rules", {})
+    if not gang_ao_tai_config.get("enabled", False):
+        return False
+    
+    group_patterns = gang_ao_tai_config.get("group_patterns", [])
+    if not group_patterns:
+        return False
+    
+    # 检查分组名称是否匹配任何模式
+    for pattern in group_patterns:
+        if re.search(pattern, group_title, re.IGNORECASE):
             return True
     
     return False
@@ -504,6 +543,89 @@ def extract_special_group_channels(all_channels):
 
     return special_channels
 
+def extract_gang_ao_tai_channels(all_channels, downloaded_files):
+    """从源9提取港澳台频道并统一分组"""
+    gang_ao_tai_config = CONFIG.get("gang_ao_tai_rules", {})
+    if not gang_ao_tai_config.get("enabled", False):
+        return []
+    
+    source_index = gang_ao_tai_config["source_index"]
+    unified_group_name = gang_ao_tai_config["unified_group_name"]
+    
+    # 找到源9的文件
+    source9_file = None
+    for file_path in downloaded_files:
+        if f"source_{source_index + 1}_" in file_path:
+            source9_file = file_path
+            break
+    
+    if not source9_file:
+        logger.warning(f"未找到源{source_index + 1}的下载文件")
+        return []
+    
+    # 从文件中提取港澳台频道
+    gang_ao_tai_channels = []
+    try:
+        with open(source9_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        
+        for i in range(len(lines) - 1):
+            line = lines[i]
+            if line.startswith('#EXTINF'):
+                if ',' in line:
+                    channel_name = extract_channel_name_from_extinf(line)
+                    
+                    group_match = re.search(r'group-title="([^"]*)"', line)
+                    group_title = group_match.group(1) if group_match else ""
+                    
+                    # 检查是否为港澳台分组
+                    if is_gang_ao_tai_group(group_title):
+                        if i + 1 < len(lines) and lines[i + 1].strip() and not lines[i + 1].startswith('#'):
+                            link = lines[i + 1].strip()
+                            
+                            # 修改分组名称为统一的港澳台分组
+                            new_extinf_line = line
+                            if group_match:
+                                new_extinf_line = line.replace(
+                                    f'group-title="{group_title}"',
+                                    f'group-title="{unified_group_name}"'
+                                )
+                            else:
+                                new_extinf_line = line.replace(
+                                    '#EXTINF:-1',
+                                    f'#EXTINF:-1 group-title="{unified_group_name}"'
+                                )
+                            
+                            gang_ao_tai_channels.append({
+                                'name': channel_name,
+                                'group': unified_group_name,
+                                'link': link,
+                                'extinf_line': new_extinf_line,
+                                'source': source_index,
+                                'original_group': group_title
+                            })
+        
+        logger.info(f"从源{source_index + 1}提取到 {len(gang_ao_tai_channels)} 个港澳台频道，统一分组为'{unified_group_name}'")
+        
+        # 去重：相同的频道名只保留一个
+        unique_channels = []
+        seen_names = set()
+        
+        for channel in gang_ao_tai_channels:
+            if channel['name'] not in seen_names:
+                seen_names.add(channel['name'])
+                unique_channels.append(channel)
+        
+        logger.info(f"去重后港澳台频道数量: {len(unique_channels)}")
+        
+        return unique_channels
+        
+    except Exception as e:
+        logger.error(f"提取港澳台频道时出错: {e}", exc_info=True)
+        return []
+
 def extract_migu_sports_channels(all_channels, downloaded_files):
     """整合咪咕体育频道"""
     migu_config = CONFIG.get("migu_sports")
@@ -572,6 +694,14 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
     if migu_config and group_title in migu_config["groups"].values():
         return None
 
+    # 检查是否为港澳台分组
+    gang_ao_tai_config = CONFIG.get("gang_ao_tai_rules", {})
+    if gang_ao_tai_config.get("enabled", False):
+        unified_group_name = gang_ao_tai_config.get("unified_group_name", "港澳台频道")
+        if group_title == unified_group_name:
+            # 对于港澳台分组，我们不在这里查找，因为它们已经在extract_gang_ao_tai_channels中处理了
+            return None
+
     normalized_target_name = normalize_channel_name(channel_name, CONFIG.get("channel_name_mapping", {}))
 
     # 规则1: 如果是吉视相关频道，从源1获取
@@ -605,7 +735,7 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
 
     return None
 
-def update_target_file(all_channels, target_channels, special_channels, migu_channels):
+def update_target_file(all_channels, target_channels, special_channels, migu_channels, gang_ao_tai_channels):
     """更新目标文件中的链接"""
     try:
         logger.info("开始更新目标文件 index.html ...")
@@ -631,6 +761,12 @@ def update_target_file(all_channels, target_channels, special_channels, migu_cha
         if migu_config:
             for group_name in migu_config["groups"].values():
                 special_group_titles.append(f"# {group_name}分组")
+        
+        # 添加港澳台分组标题
+        gang_ao_tai_config = CONFIG.get("gang_ao_tai_rules", {})
+        if gang_ao_tai_config.get("enabled", False):
+            unified_group_name = gang_ao_tai_config.get("unified_group_name", "港澳台频道")
+            special_group_titles.append(f"# {unified_group_name}分组")
         
         update_group_name = CONFIG["update_channel"]["group_title"]
         special_group_titles.append(f"# {update_group_name}分组")
@@ -698,9 +834,17 @@ def update_target_file(all_channels, target_channels, special_channels, migu_cha
         if not new_lines or not new_lines[0].startswith('#EXTM3U'):
             new_lines.insert(0, '#EXTM3U')
         
-        if new_lines and new_lines[-1].strip() != "":
+        # 添加港澳台频道
+        if gang_ao_tai_channels:
+            unified_group_name = gang_ao_tai_config.get("unified_group_name", "港澳台频道")
+            new_lines.append(f"# {unified_group_name}分组")
+            for channel in gang_ao_tai_channels:
+                new_lines.append(channel['extinf_line'])
+                new_lines.append(channel['link'])
+                logger.info(f"添加港澳台频道: '{channel['name']}'")
+                updated_count += 1
             new_lines.append("")
-
+        
         if special_channels:
             new_lines.append(f"# {CONFIG['special_groups']['冰茶体育']['new_group_name']}分组")
             for channel in special_channels:
@@ -763,6 +907,14 @@ def main():
 
         if CONFIG.get("channel_name_mapping"):
             logger.info("已启用频道名称映射")
+        
+        # 显示港澳台规则状态
+        gang_ao_tai_config = CONFIG.get("gang_ao_tai_rules", {})
+        if gang_ao_tai_config.get("enabled", False):
+            patterns = gang_ao_tai_config.get("group_patterns", [])
+            source_index = gang_ao_tai_config.get("source_index", 8)
+            unified_group_name = gang_ao_tai_config.get("unified_group_name", "港澳台频道")
+            logger.info(f"已启用港澳台规则: 从源{source_index + 1}获取，统一分组为'{unified_group_name}'，匹配 {len(patterns)} 个分组模式")
 
         target_channels = extract_target_channels()
 
@@ -799,7 +951,10 @@ def main():
         
         migu_channels = extract_migu_sports_channels(all_channels, downloaded_files)
         
-        update_target_file(all_channels, target_channels, special_channels, migu_channels)
+        # 提取港澳台频道
+        gang_ao_tai_channels = extract_gang_ao_tai_channels(all_channels, downloaded_files)
+        
+        update_target_file(all_channels, target_channels, special_channels, migu_channels, gang_ao_tai_channels)
 
         try:
             download_dir = CONFIG["download_dir"]
@@ -816,6 +971,8 @@ def main():
         logger.info(f"完成时间 (北京时间): {get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"总耗时: {duration:.2f} 秒")
         logger.info(f"总计处理频道源: {len(all_channels)} 个")
+        if gang_ao_tai_channels:
+            logger.info(f"港澳台频道数量: {len(gang_ao_tai_channels)} 个 (统一分组: '{gang_ao_tai_config.get('unified_group_name', '港澳台频道')}')")
         logger.info(f"日志文件: logs/tv_auto_update_{datetime.now().strftime('%Y%m%d')}.log")
         logger.info("=" * 60)
 
