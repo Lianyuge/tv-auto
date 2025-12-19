@@ -69,7 +69,7 @@ def get_config():
     return {
         "m3u_sources": m3u_sources,
         "group_rules": {
-            "央视吉林": 0,
+            "央视吉林": 0,  # 新添加的规则：央视吉林分组只从源1获取
             "央视辽宁": 2,
         },
         "gang_ao_tai_rules": {  # 新增港澳台规则
@@ -714,7 +714,7 @@ def find_channel_by_rules(channel_name, group_title, all_channels):
                     logger.debug(f"吉视频道匹配: 目标'{channel_name}' -> 源'{channel['name']}' (标准化为 '{normalized_target_name}')")
                 return channel
 
-    # 规则2: 如果分组在规则中，从指定源查找
+    # 规则2: 如果分组在规则中，从指定源查找（包括"央视吉林"分组）
     if group_title in CONFIG["group_rules"]:
         target_source = CONFIG["group_rules"][group_title]
         for channel in all_channels:
@@ -907,6 +907,12 @@ def main():
 
         if CONFIG.get("channel_name_mapping"):
             logger.info("已启用频道名称映射")
+        
+        # 显示分组规则
+        if CONFIG.get("group_rules"):
+            logger.info("分组规则:")
+            for group_name, source_index in CONFIG["group_rules"].items():
+                logger.info(f"  - {group_name}: 只从源{source_index + 1}获取")
         
         # 显示港澳台规则状态
         gang_ao_tai_config = CONFIG.get("gang_ao_tai_rules", {})
