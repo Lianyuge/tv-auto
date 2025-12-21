@@ -1,5 +1,5 @@
 # tv-auto
-连宇的GitHub
+张连宇的GitHub
 
 自用侵删
 
