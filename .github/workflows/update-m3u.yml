@@ -1,40 +1,31 @@
-name: Update IPTV M3U Daily
+name: Update M3U Live Sources
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 每天UTC时间2点运行（北京时间10点）
-  workflow_dispatch:  # 手动触发
-  push:
-    paths:
-      - 'scripts/update_sources.py'
-      - '.github/workflows/update-m3u.yml'
+    - cron: '57 15 * * *'  # 每天UTC时间15:57运行，北京时间23:57更新
+  workflow_dispatch:
 
-# 设置写入权限
 permissions:
   contents: write
 
 jobs:
-  update-m3u:
+  update-sources:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v3
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        # 强制获取所有历史和文件
-        fetch-depth: 0
-    
-    - name: Set up Python
+        
+    - name: Setup Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
-    
+        python-version: '3.x'
+        
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests
-    
+      run: pip install requests
+        
     - name: Run update script
       env:
         M3U_SOURCE_1: ${{ secrets.M3U_SOURCE_1 }}
@@ -44,27 +35,23 @@ jobs:
         M3U_SOURCE_5: ${{ secrets.M3U_SOURCE_5 }}
         M3U_SOURCE_6: ${{ secrets.M3U_SOURCE_6 }}
         M3U_SOURCE_7: ${{ secrets.M3U_SOURCE_7 }}
+        M3U_SOURCE_8: ${{ secrets.M3U_SOURCE_8 }}
+        M3U_SOURCE_9: ${{ secrets.M3U_SOURCE_9 }}
+        M3U_SOURCE_10: ${{ secrets.M3U_SOURCE_10 }}
+        M3U_SOURCE_11: ${{ secrets.M3U_SOURCE_11 }}
+        M3U_SOURCE_12: ${{ secrets.M3U_SOURCE_12 }}
       run: python scripts/update_sources.py
-    
+      
     - name: Commit and push changes
       run: |
-        # 配置Git用户
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git config --global user.name "github-actions[bot]"
-        
-        # 拉取最新更改避免冲突
-        git pull origin main --rebase
-        
-        # 检查是否有更改
-        if git diff --quiet; then
-          echo "没有更改需要提交"
-        else
-          # 添加更改
-          git add index.html
-          
-          # 提交更改
-          git commit -m "🔄 Auto-update M3U playlist - $(date +'%Y-%m-%d %H:%M:%S')"
-          
-          # 推送更改
-          git push origin main
-        fi
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add .
+        git diff --staged --quiet || git commit -m "Auto-update live sources: $(date +'%Y-%m-%d %H:%M')"
+        git push
+
+
+
+
+
+
