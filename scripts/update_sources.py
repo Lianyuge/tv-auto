@@ -4,6 +4,7 @@
 IPTV自动更新脚本
 说明：根据index.html中的频道名称，从指定M3U源获取直播源地址并更新
 支持从环境变量或GitHub Secrets获取M3U源地址
+未配置的分组会从所有可用的M3U源中查找匹配的频道
 """
 
 import requests
@@ -12,7 +13,6 @@ from datetime import datetime
 import logging
 import sys
 import os
-import json
 
 # ==================== 配置区域 ====================
 
@@ -26,20 +26,11 @@ def get_m3u_sources_from_env():
         env_key = f"M3U_SOURCE_{i}"
         env_value = os.environ.get(env_key)
         
-        if env_value:
+        if env_value and not env_value.startswith("http://example.com"):
             sources[env_key] = env_value
             print(f"✓ 从环境变量获取到 {env_key}")
-        else:
-            # 如果环境变量没有，使用默认值（仅用于本地测试）
-            default_sources = {
-                "M3U_SOURCE_1": "http://example.com/source1.m3u",  # 央视源
-                "M3U_SOURCE_2": "http://example.com/source2.m3u",  # 咪咕源
-                "M3U_SOURCE_3": "http://example.com/source3.m3u",  # 卫视/付费源
-                "M3U_SOURCE_4": "http://example.com/source4.m3u"   # 吉林源
-            }
-            if env_key in default_sources:
-                sources[env_key] = default_sources[env_key]
-                print(f"⚠ 使用默认值 {env_key} (环境变量未设置)")
+        elif env_value:
+            print(f"⚠ {env_key} 使用的是默认example.com，将跳过此源")
     
     return sources
 
@@ -53,6 +44,7 @@ GROUP_SOURCE_MAP = {
     "吉林地方": "M3U_SOURCE_4",  # 线路1频道
     "冰茶体育": "M3U_SOURCE_2",  # 特殊分组：整个分组重新获取
     "体育回看": "M3U_SOURCE_2"   # 特殊分组：整个分组重新获取
+    # 未配置的分组将从所有可用的M3U源中查找
 }
 
 # 需要完整重新获取的特殊分组
@@ -117,6 +109,10 @@ def clean_channel_name(channel_name: str) -> str:
     cctv_match = re.search(r'CCTV(\d+)', cleaned, re.IGNORECASE)
     if cctv_match:
         return f"CCTV{cctv_match.group(1)}"
+    
+    # 特殊处理卫视频道
+    if "卫视" in cleaned:
+        return cleaned.replace("卫视", "")
     
     return cleaned.upper()
 
@@ -217,7 +213,6 @@ def build_channel_map(m3u_content: list):
             current_extinf = None
             current_tvg_info = {}
     
-    logger.info(f"构建频道映射，唯一频道数: {len(channel_map)}")
     return channel_map
 
 def extract_special_group_from_source(source_url: str, target_group: str):
@@ -285,7 +280,7 @@ def process_index_html():
                 else:
                     # 如果没有group-title，尝试从频道名称推断
                     channel_part = line.split(',')[-1]
-                    current_group = "未知分组"
+                    current_group = "未分组"
                 
                 # 提取频道名称
                 if ',' in line:
@@ -320,8 +315,8 @@ def process_index_html():
         logger.error(f"处理 {INPUT_FILE} 时出错: {str(e)}")
         return [], {}
 
-def find_best_match(channel_name: str, channel_map: dict):
-    """在频道映射中查找最佳匹配"""
+def find_best_match_in_single_source(channel_name: str, channel_map: dict):
+    """在单个源中查找最佳匹配"""
     clean_name = clean_channel_name(channel_name)
     
     # 1. 精确匹配（清洗后的名称）
@@ -346,10 +341,26 @@ def find_best_match(channel_name: str, channel_map: dict):
                     for _, extinf_line, url_line, _ in channel_list:
                         return extinf_line, url_line
     
-    logger.warning(f"未找到匹配的频道: {channel_name} (清洗后: {clean_name})")
+    # 4. 尝试匹配部分（针对卫视频道）
+    if "卫视" in channel_name or "卫视" in clean_name:
+        for map_name, channel_list in channel_map.items():
+            if "卫视" in map_name:
+                for _, extinf_line, url_line, _ in channel_list:
+                    return extinf_line, url_line
+    
     return None
 
-def update_channels(channels_by_group: dict, m3u_sources: dict):
+def find_best_match_in_all_sources(channel_name: str, all_source_maps: dict):
+    """在所有源中查找最佳匹配"""
+    # 按照优先级在所有源中查找
+    for source_key, channel_map in all_source_maps.items():
+        result = find_best_match_in_single_source(channel_name, channel_map)
+        if result:
+            logger.debug(f"  在 {source_key} 中找到匹配: {channel_name}")
+            return result
+    return None
+
+def update_channels(channels_by_group: dict, all_source_maps: dict, m3u_sources: dict):
     """更新所有频道的URL"""
     updated_lines = []
     total_channels = 0
@@ -366,17 +377,16 @@ def update_channels(channels_by_group: dict, m3u_sources: dict):
             # 获取对应的M3U源
             source_key = GROUP_SOURCE_MAP.get(group_name)
             if not source_key:
-                logger.error(f"分组 '{group_name}' 未配置M3U源")
+                logger.error(f"分组 '{group_name}' 未配置M3U源，将从所有源中查找")
+                # 对于未配置的特殊分组，保留原始内容
+                for _, extinf_line, old_url in channels:
+                    updated_lines.append(extinf_line)
+                    updated_lines.append(old_url)
                 continue
                 
             source_url = m3u_sources.get(source_key)
-            if not source_url:
-                logger.error(f"未找到M3U源: {source_key}")
-                continue
-            
-            # 检查是否为默认URL（example.com）
-            if "example.com" in source_url:
-                logger.error(f"M3U源 {source_key} 未正确配置，使用默认值，无法更新分组 '{group_name}'")
+            if not source_url or "example.com" in source_url:
+                logger.warning(f"M3U源 {source_key} 未配置或使用默认值，无法更新特殊分组 '{group_name}'")
                 # 保留原始内容
                 for _, extinf_line, old_url in channels:
                     updated_lines.append(extinf_line)
@@ -389,6 +399,7 @@ def update_channels(channels_by_group: dict, m3u_sources: dict):
                 updated_lines.extend(special_lines)
                 updated_count += len(special_lines) // 2
                 total_channels += len(special_lines) // 2
+                logger.info(f"成功更新特殊分组 '{group_name}'，频道数: {len(special_lines)//2}")
             else:
                 logger.warning(f"未找到特殊分组 '{group_name}' 的内容，保留原始")
                 for _, extinf_line, old_url in channels:
@@ -398,38 +409,6 @@ def update_channels(channels_by_group: dict, m3u_sources: dict):
         
         # 普通分组处理
         source_key = GROUP_SOURCE_MAP.get(group_name)
-        if not source_key:
-            logger.warning(f"分组 '{group_name}' 未配置M3U源，跳过")
-            continue
-            
-        source_url = m3u_sources.get(source_key)
-        if not source_url:
-            logger.error(f"未找到M3U源: {source_key}")
-            continue
-        
-        # 检查是否为默认URL（example.com）
-        if "example.com" in source_url:
-            logger.warning(f"M3U源 {source_key} 未正确配置，使用默认值，跳过分组 '{group_name}'")
-            # 保留原始内容
-            for _, extinf_line, old_url in channels:
-                updated_lines.append(extinf_line)
-                updated_lines.append(old_url)
-                total_channels += 1
-            continue
-        
-        # 获取并构建该源的频道映射
-        logger.info(f"从 {source_key} 获取频道映射")
-        m3u_content = fetch_m3u_content(source_url)
-        if not m3u_content:
-            logger.error(f"无法从 {source_key} 获取内容，跳过分组 {group_name}")
-            # 保留原始内容
-            for _, extinf_line, old_url in channels:
-                updated_lines.append(extinf_line)
-                updated_lines.append(old_url)
-                total_channels += 1
-            continue
-            
-        channel_map = build_channel_map(m3u_content)
         
         # 为每个频道查找匹配的URL
         for channel_name, extinf_line, old_url in channels:
@@ -438,25 +417,68 @@ def update_channels(channels_by_group: dict, m3u_sources: dict):
             # 保持EXTINF行不变，只更新URL
             updated_lines.append(extinf_line)
             
-            # 查找匹配的URL
-            match_result = find_best_match(channel_name, channel_map)
-            if match_result:
-                new_extinf, new_url = match_result
-                updated_lines.append(new_url)
-                updated_count += 1
-                logger.info(f"  ✓ 更新: {channel_name}")
-            else:
-                # 使用原始URL
-                updated_lines.append(old_url)
-                failed_count += 1
-                logger.warning(f"  ✗ 未匹配: {channel_name}，使用原URL")
+            matched = False
+            
+            # 如果分组有配置的源，优先从该源查找
+            if source_key:
+                source_url = m3u_sources.get(source_key)
+                if source_url and source_key in all_source_maps and "example.com" not in source_url:
+                    channel_map = all_source_maps.get(source_key, {})
+                    result = find_best_match_in_single_source(channel_name, channel_map)
+                    if result:
+                        _, new_url = result
+                        updated_lines.append(new_url)
+                        updated_count += 1
+                        matched = True
+                        logger.info(f"  ✓ {channel_name} (从配置源 {source_key})")
+            
+            # 如果未在配置源中找到，或分组未配置源，则从所有源中查找
+            if not matched:
+                result = find_best_match_in_all_sources(channel_name, all_source_maps)
+                if result:
+                    _, new_url = result
+                    updated_lines.append(new_url)
+                    updated_count += 1
+                    logger.info(f"  ✓ {channel_name} (从所有源中)")
+                else:
+                    # 使用原始URL
+                    updated_lines.append(old_url)
+                    failed_count += 1
+                    logger.warning(f"  ✗ 未匹配: {channel_name}，使用原URL")
     
     logger.info(f"\n更新统计:")
     logger.info(f"总频道数: {total_channels}")
     logger.info(f"成功更新: {updated_count}")
     logger.info(f"更新失败: {failed_count}")
     
+    # 计算成功率
+    if total_channels > 0:
+        success_rate = (updated_count / total_channels) * 100
+        logger.info(f"更新成功率: {success_rate:.2f}%")
+    
     return updated_lines
+
+def fetch_all_source_maps(m3u_sources: dict):
+    """获取所有源的频道映射"""
+    all_source_maps = {}
+    
+    for source_key, source_url in m3u_sources.items():
+        # 跳过未配置的源
+        if "example.com" in source_url:
+            logger.warning(f"跳过未配置的源: {source_key}")
+            continue
+            
+        logger.info(f"正在处理源: {source_key}")
+        m3u_content = fetch_m3u_content(source_url)
+        if m3u_content:
+            channel_map = build_channel_map(m3u_content)
+            all_source_maps[source_key] = channel_map
+            logger.info(f"  ✓ 成功构建频道映射，频道数: {len(channel_map)}")
+        else:
+            logger.warning(f"  ✗ 无法获取源内容: {source_key}")
+    
+    logger.info(f"总共获取到 {len(all_source_maps)} 个可用的源")
+    return all_source_maps
 
 def main():
     """主函数"""
@@ -477,21 +499,25 @@ def main():
             return 1
         
         logger.info(f"已配置 {len(m3u_sources)} 个M3U源")
-        for key, value in m3u_sources.items():
-            # 不显示完整的URL以防泄露
-            display_value = value if len(value) < 50 else value[:50] + "..."
-            logger.info(f"  {key}: {display_value}")
         
-        # 1. 读取并解析index.html
+        # 1. 获取所有源的频道映射
+        logger.info("\n正在获取所有源的频道映射...")
+        all_source_maps = fetch_all_source_maps(m3u_sources)
+        
+        if not all_source_maps:
+            logger.error("错误：无法获取任何源的频道映射，请检查M3U源地址是否正确")
+            return 1
+        
+        # 2. 读取并解析index.html
         header_lines, channels_by_group = process_index_html()
         if not channels_by_group:
             logger.error("未找到任何频道信息，请检查文件格式")
             return 1
         
-        # 2. 更新频道URL
-        updated_channel_lines = update_channels(channels_by_group, m3u_sources)
+        # 3. 更新频道URL
+        updated_channel_lines = update_channels(channels_by_group, all_source_maps, m3u_sources)
         
-        # 3. 生成最终内容
+        # 4. 生成最终内容
         final_content = []
         
         # 添加头部
@@ -507,11 +533,11 @@ def main():
         current_time = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
         final_content.append(f"\n# 更新时间：{current_time}")
         
-        # 4. 写入文件
+        # 5. 写入文件
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             f.write('\n'.join(final_content))
         
-        # 5. 输出统计信息
+        # 6. 输出统计信息
         end_time = datetime.now()
         duration = (end_time - start_time).seconds
         
@@ -524,7 +550,7 @@ def main():
         logger.info(f"耗时: {duration} 秒")
         logger.info("=" * 60)
         
-        # 6. 备份原始文件（可选）
+        # 7. 备份原始文件（可选）
         backup_file = f"index_backup_{start_time.strftime('%Y%m%d_%H%M%S')}.html"
         try:
             with open(INPUT_FILE, 'r', encoding='utf-8') as f_in, \
