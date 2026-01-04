@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IPTV自动更新脚本
+IPTV自动更新脚本 - 优化版
 说明：根据index.html中的频道名称，从指定M3U源获取直播源地址并更新
-支持从环境变量或GitHub Secrets获取M3U源地址
-未配置的分组会从所有可用的M3U源中查找匹配的频道
+避免重复源，优化匹配逻辑，新增更多分组规则
 """
 
 import requests
@@ -13,6 +12,7 @@ from datetime import datetime
 import logging
 import sys
 import os
+import hashlib
 
 # ==================== 配置区域 ====================
 
@@ -34,16 +34,21 @@ def get_m3u_sources_from_env():
     
     return sources
 
-# 分组与源的映射规则
+# 分组与源的映射规则（新增更多规则）
 GROUP_SOURCE_MAP = {
     "央视": "M3U_SOURCE_1",
     "咪咕频道": "M3U_SOURCE_2", 
-    "地方卫视": "M3U_SOURCE_3",
+    "地方卫视": "M3U_SOURCE_3",  # 修改为M3U_SOURCE_3
     "付费频道": "M3U_SOURCE_3",
     "辽宁地方": "M3U_SOURCE_1",  # 线路1频道
     "吉林地方": "M3U_SOURCE_4",  # 线路1频道
     "冰茶体育": "M3U_SOURCE_2",  # 特殊分组：整个分组重新获取
-    "体育回看": "M3U_SOURCE_2"   # 特殊分组：整个分组重新获取
+    "体育回看": "M3U_SOURCE_2",  # 特殊分组：整个分组重新获取
+    "咪视界bc": "M3U_SOURCE_2",  # 新增规则
+    "粤语频道": "M3U_SOURCE_2",  # 新增规则
+    "超清频道": "M3U_SOURCE_2",  # 新增规则
+    "其他频道": "M3U_SOURCE_1",  # 新增规则
+    "教育频道": "M3U_SOURCE_1",  # 新增规则
     # 未配置的分组将从所有可用的M3U源中查找
 }
 
@@ -57,14 +62,35 @@ LOG_FILE = "update_log.txt"    # 日志文件
 
 # 频道名称清洗规则（用于匹配）
 CLEAN_PATTERNS = [
-    (r'CCTV-?', 'CCTV'),           # CCTV-1 -> CCTV1
+    (r'^CCTV-?', 'CCTV'),          # CCTV-1 -> CCTV1
+    (r'^央视-?', 'CCTV'),          # 央视1 -> CCTV1
     (r'[-\s]', ''),                # 移除空格和短横线
     (r'\(.*?\)', ''),              # 移除括号内容
     (r'\[.*?\]', ''),              # 移除方括号内容
-    (r'标清|高清|HD|SD|直播', ''), # 移除画质标识
-    (r'频道|台', ''),              # 移除频道/台字
-    (r'^.*?卫视', '卫视'),         # 统一卫视格式
+    (r'标清|高清|HD|SD|直播|频道|台', ''), # 移除画质标识
 ]
+
+# 频道名称别名映射（提高匹配成功率）
+CHANNEL_ALIAS = {
+    "CCTV1": ["CCTV1", "CCTV-1", "央视1", "CCTV1综合", "中央1"],
+    "CCTV2": ["CCTV2", "CCTV-2", "央视2", "CCTV2财经", "中央2"],
+    "CCTV3": ["CCTV3", "CCTV-3", "央视3", "CCTV3综艺", "中央3"],
+    "CCTV4": ["CCTV4", "CCTV-4", "央视4", "CCTV4中文国际", "中央4"],
+    "CCTV5": ["CCTV5", "CCTV-5", "央视5", "CCTV5体育", "中央5"],
+    "CCTV5+": ["CCTV5+", "CCTV5PLUS", "CCTV5体育赛事"],
+    "CCTV6": ["CCTV6", "CCTV-6", "央视6", "CCTV6电影", "中央6"],
+    "CCTV7": ["CCTV7", "CCTV-7", "央视7", "CCTV7国防军事", "中央7"],
+    "CCTV8": ["CCTV8", "CCTV-8", "央视8", "CCTV8电视剧", "中央8"],
+    "CCTV9": ["CCTV9", "CCTV-9", "央视9", "CCTV9纪录", "中央9"],
+    "CCTV10": ["CCTV10", "CCTV-10", "央视10", "CCTV10科教", "中央10"],
+    "CCTV11": ["CCTV11", "CCTV-11", "央视11", "CCTV11戏曲", "中央11"],
+    "CCTV12": ["CCTV12", "CCTV-12", "央视12", "CCTV12社会与法", "中央12"],
+    "CCTV13": ["CCTV13", "CCTV-13", "央视13", "CCTV13新闻", "中央13"],
+    "CCTV14": ["CCTV14", "CCTV-14", "央视14", "CCTV14少儿", "中央14"],
+    "CCTV15": ["CCTV15", "CCTV-15", "央视15", "CCTV15音乐", "中央15"],
+    "CCTV16": ["CCTV16", "CCTV-16", "央视16", "CCTV16奥林匹克"],
+    "CCTV17": ["CCTV17", "CCTV-17", "央视17", "CCTV17农业农村"],
+}
 
 # ==================== 日志设置 ====================
 
@@ -110,11 +136,30 @@ def clean_channel_name(channel_name: str) -> str:
     if cctv_match:
         return f"CCTV{cctv_match.group(1)}"
     
+    # 特殊处理CCTV5+
+    if "CCTV5+" in cleaned or "CCTV5PLUS" in cleaned.upper():
+        return "CCTV5+"
+    
     # 特殊处理卫视频道
     if "卫视" in cleaned:
-        return cleaned.replace("卫视", "")
+        # 提取卫视名称，如"浙江卫视" -> "浙江"
+        ws_match = re.search(r'([\u4e00-\u9fa5]+)卫视', cleaned)
+        if ws_match:
+            return f"{ws_match.group(1)}卫视"
     
     return cleaned.upper()
+
+def get_channel_aliases(channel_name: str) -> list:
+    """获取频道的所有别名"""
+    cleaned_name = clean_channel_name(channel_name)
+    
+    # 查找别名映射
+    for base_name, aliases in CHANNEL_ALIAS.items():
+        if cleaned_name == base_name:
+            return aliases + [base_name]
+    
+    # 如果没有找到映射，返回清洗后的名称
+    return [cleaned_name, channel_name]
 
 def parse_m3u_line(line: str):
     """解析M3U的一行（EXTINF行）"""
@@ -139,6 +184,7 @@ def parse_m3u_line(line: str):
         tvg_id_match = re.search(r'tvg-id="([^"]*)"', attr_part)
         tvg_name_match = re.search(r'tvg-name="([^"]*)"', attr_part)
         group_match = re.search(r'group-title="([^"]*)"', attr_part)
+        logo_match = re.search(r'tvg-logo="([^"]*)"', attr_part)
         
         if tvg_id_match:
             tvg_info['tvg-id'] = tvg_id_match.group(1)
@@ -146,6 +192,8 @@ def parse_m3u_line(line: str):
             tvg_info['tvg-name'] = tvg_name_match.group(1)
         if group_match:
             tvg_info['group-title'] = group_match.group(1)
+        if logo_match:
+            tvg_info['tvg-logo'] = logo_match.group(1)
     else:
         # 简单格式
         channel_name = line.split(',')[-1].strip()
@@ -174,10 +222,12 @@ def fetch_m3u_content(source_url: str):
         return []
 
 def build_channel_map(m3u_content: list):
-    """从M3U内容构建频道映射字典"""
+    """从M3U内容构建频道映射字典，避免重复"""
     channel_map = {}
+    url_set = set()  # 用于去重，避免相同URL的频道
     current_extinf = None
     current_tvg_info = {}
+    duplicate_count = 0
     
     for line in m3u_content:
         line = line.strip()
@@ -194,24 +244,45 @@ def build_channel_map(m3u_content: list):
         elif current_extinf and not line.startswith('#'):
             # 这是URL行
             url_line = line
+            
+            # 计算URL的MD5用于去重
+            url_hash = hashlib.md5(url_line.encode()).hexdigest()
+            
+            # 如果URL已经存在，跳过这个频道
+            if url_hash in url_set:
+                duplicate_count += 1
+                current_extinf = None
+                current_tvg_info = {}
+                continue
+                
+            url_set.add(url_hash)
+            
             channel_name_from_extinf = current_extinf.split(',')[-1].strip()
             
             # 清洗频道名称用于匹配
             clean_name = clean_channel_name(channel_name_from_extinf)
             
-            if clean_name not in channel_map:
-                channel_map[clean_name] = []
+            # 获取所有可能的别名
+            aliases = get_channel_aliases(channel_name_from_extinf)
             
-            # 存储频道信息
-            channel_map[clean_name].append((
-                channel_name_from_extinf,
-                current_extinf,
-                url_line,
-                current_tvg_info.get('group-title', '')
-            ))
+            # 为每个别名添加映射
+            for alias in aliases:
+                if alias not in channel_map:
+                    channel_map[alias] = []
+                
+                # 存储频道信息
+                channel_map[alias].append((
+                    channel_name_from_extinf,
+                    current_extinf,
+                    url_line,
+                    current_tvg_info.get('group-title', '')
+                ))
             
             current_extinf = None
             current_tvg_info = {}
+    
+    if duplicate_count > 0:
+        logger.info(f"移除 {duplicate_count} 个重复URL的频道")
     
     return channel_map
 
@@ -225,6 +296,7 @@ def extract_special_group_from_source(source_url: str, target_group: str):
     special_group_lines = []
     in_target_group = False
     current_extinf = None
+    url_set = set()  # 用于去重
     
     for line in m3u_content:
         line = line.strip()
@@ -236,16 +308,19 @@ def extract_special_group_from_source(source_url: str, target_group: str):
             if f'group-title="{target_group}"' in line or target_group in line:
                 in_target_group = True
                 current_extinf = line
-                special_group_lines.append(line)
             else:
                 in_target_group = False
                 current_extinf = None
         elif in_target_group and current_extinf and not line.startswith('#'):
-            # 添加URL行
-            special_group_lines.append(line)
+            # 检查URL是否重复
+            url_hash = hashlib.md5(line.encode()).hexdigest()
+            if url_hash not in url_set:
+                url_set.add(url_hash)
+                special_group_lines.append(current_extinf)
+                special_group_lines.append(line)
             current_extinf = None
     
-    logger.info(f"找到 {len(special_group_lines)//2} 个频道在分组 '{target_group}'")
+    logger.info(f"找到 {len(special_group_lines)//2} 个频道在分组 '{target_group}' (去重后)")
     return special_group_lines
 
 def process_index_html():
@@ -317,21 +392,26 @@ def process_index_html():
 
 def find_best_match_in_single_source(channel_name: str, channel_map: dict):
     """在单个源中查找最佳匹配"""
+    # 获取频道的所有别名
+    aliases = get_channel_aliases(channel_name)
+    
+    # 按优先级尝试别名匹配
+    for alias in aliases:
+        if alias in channel_map:
+            # 返回第一个匹配项
+            for _, extinf_line, url_line, _ in channel_map[alias]:
+                return extinf_line, url_line
+    
+    # 模糊匹配（包含关系）
     clean_name = clean_channel_name(channel_name)
     
-    # 1. 精确匹配（清洗后的名称）
-    if clean_name in channel_map:
-        # 返回第一个匹配项
-        for _, extinf_line, url_line, _ in channel_map[clean_name]:
-            return extinf_line, url_line
-    
-    # 2. 模糊匹配（包含关系）
+    # 尝试在channel_map中查找包含关系
     for map_name, channel_list in channel_map.items():
         if clean_name in map_name or map_name in clean_name:
             for _, extinf_line, url_line, _ in channel_list:
                 return extinf_line, url_line
     
-    # 3. 尝试匹配部分（针对CCTV频道）
+    # 尝试部分匹配（针对CCTV频道）
     if 'CCTV' in clean_name:
         cctv_num_match = re.search(r'CCTV(\d+)', clean_name, re.IGNORECASE)
         if cctv_num_match:
@@ -340,13 +420,6 @@ def find_best_match_in_single_source(channel_name: str, channel_map: dict):
                 if f'CCTV{cctv_num}' in map_name.upper():
                     for _, extinf_line, url_line, _ in channel_list:
                         return extinf_line, url_line
-    
-    # 4. 尝试匹配部分（针对卫视频道）
-    if "卫视" in channel_name or "卫视" in clean_name:
-        for map_name, channel_list in channel_map.items():
-            if "卫视" in map_name:
-                for _, extinf_line, url_line, _ in channel_list:
-                    return extinf_line, url_line
     
     return None
 
@@ -361,11 +434,12 @@ def find_best_match_in_all_sources(channel_name: str, all_source_maps: dict):
     return None
 
 def update_channels(channels_by_group: dict, all_source_maps: dict, m3u_sources: dict):
-    """更新所有频道的URL"""
+    """更新所有频道的URL，避免重复"""
     updated_lines = []
     total_channels = 0
     updated_count = 0
     failed_count = 0
+    used_urls = set()  # 记录已使用的URL，避免重复
     
     for group_name, channels in channels_by_group.items():
         logger.info(f"\n处理分组: {group_name}")
@@ -393,7 +467,7 @@ def update_channels(channels_by_group: dict, all_source_maps: dict, m3u_sources:
                     updated_lines.append(old_url)
                 continue
             
-            # 提取整个分组
+            # 提取整个分组（已去重）
             special_lines = extract_special_group_from_source(source_url, group_name)
             if special_lines:
                 updated_lines.extend(special_lines)
@@ -418,6 +492,7 @@ def update_channels(channels_by_group: dict, all_source_maps: dict, m3u_sources:
             updated_lines.append(extinf_line)
             
             matched = False
+            new_url = None
             
             # 如果分组有配置的源，优先从该源查找
             if source_key:
@@ -427,24 +502,33 @@ def update_channels(channels_by_group: dict, all_source_maps: dict, m3u_sources:
                     result = find_best_match_in_single_source(channel_name, channel_map)
                     if result:
                         _, new_url = result
-                        updated_lines.append(new_url)
-                        updated_count += 1
                         matched = True
-                        logger.info(f"  ✓ {channel_name} (从配置源 {source_key})")
             
-            # 如果未在配置源中找到，或分组未配置源，则从所有源中查找
+            # 如果未在配置源中找到，则从所有源中查找
             if not matched:
                 result = find_best_match_in_all_sources(channel_name, all_source_maps)
                 if result:
                     _, new_url = result
-                    updated_lines.append(new_url)
-                    updated_count += 1
-                    logger.info(f"  ✓ {channel_name} (从所有源中)")
-                else:
-                    # 使用原始URL
+                    matched = True
+            
+            # 如果找到了新URL，检查是否重复
+            if matched and new_url:
+                # 计算URL的MD5用于去重
+                url_hash = hashlib.md5(new_url.encode()).hexdigest()
+                if url_hash in used_urls:
+                    logger.warning(f"  ⚠ 跳过重复URL: {channel_name}")
                     updated_lines.append(old_url)
                     failed_count += 1
-                    logger.warning(f"  ✗ 未匹配: {channel_name}，使用原URL")
+                else:
+                    used_urls.add(url_hash)
+                    updated_lines.append(new_url)
+                    updated_count += 1
+                    logger.info(f"  ✓ {channel_name}")
+            else:
+                # 使用原始URL
+                updated_lines.append(old_url)
+                failed_count += 1
+                logger.warning(f"  ✗ 未匹配: {channel_name}，使用原URL")
     
     logger.info(f"\n更新统计:")
     logger.info(f"总频道数: {total_channels}")
@@ -473,7 +557,7 @@ def fetch_all_source_maps(m3u_sources: dict):
         if m3u_content:
             channel_map = build_channel_map(m3u_content)
             all_source_maps[source_key] = channel_map
-            logger.info(f"  ✓ 成功构建频道映射，频道数: {len(channel_map)}")
+            logger.info(f"  ✓ 成功构建频道映射，唯一频道数: {len(channel_map)}")
         else:
             logger.warning(f"  ✗ 无法获取源内容: {source_key}")
     
@@ -483,7 +567,7 @@ def fetch_all_source_maps(m3u_sources: dict):
 def main():
     """主函数"""
     logger.info("=" * 60)
-    logger.info("开始IPTV自动更新")
+    logger.info("开始IPTV自动更新 - 优化版")
     logger.info("=" * 60)
     
     start_time = datetime.now()
@@ -548,6 +632,13 @@ def main():
         logger.info(f"开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"耗时: {duration} 秒")
+        
+        # 检查是否有重复频道
+        total_channels = sum(len(channels) for channels in channels_by_group.values())
+        updated_channels = len(updated_channel_lines) // 2
+        if updated_channels < total_channels:
+            logger.warning(f"注意：输出频道数({updated_channels})少于输入频道数({total_channels})，可能是去重导致")
+        
         logger.info("=" * 60)
         
         # 7. 备份原始文件（可选）
