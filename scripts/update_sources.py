@@ -1,599 +1,552 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+IPTV自动更新脚本
+说明：根据index.html中的频道名称，从指定M3U源获取直播源地址并更新
+支持从环境变量或GitHub Secrets获取M3U源地址
+"""
 
-import os
-import re
 import requests
-import json
+import re
 from datetime import datetime
-from urllib.parse import urlparse, parse_qs, urlencode
-from collections import defaultdict
+import logging
+import sys
+import os
+import json
 
-# 从环境变量获取M3U源
-M3U_SOURCES = {
-    'M3U_SOURCE_1': os.getenv('M3U_SOURCE_1', ''),
-    'M3U_SOURCE_2': os.getenv('M3U_SOURCE_2', ''),
-    'M3U_SOURCE_3': os.getenv('M3U_SOURCE_3', ''),
-    'M3U_SOURCE_4': os.getenv('M3U_SOURCE_4', ''),
-    'M3U_SOURCE_5': os.getenv('M3U_SOURCE_5', ''),
-    'M3U_SOURCE_6': os.getenv('M3U_SOURCE_6', ''),
-    'M3U_SOURCE_7': os.getenv('M3U_SOURCE_7', ''),
-    'M3U_SOURCE_8': os.getenv('M3U_SOURCE_8', '')
-}
+# ==================== 配置区域 ====================
 
-# 分组对应的源映射（线路1专用）
-GROUP_SOURCE_MAP = {
-    '央视吉林': 'M3U_SOURCE_1',
-    '央视辽宁': 'M3U_SOURCE_2',
-    '央视咪咕': 'M3U_SOURCE_3',
-    '央视付费频道': 'M3U_SOURCE_1',
-    '卫视频道': 'M3U_SOURCE_1',
-    '吉林本地': 'M3U_SOURCE_4',
-    '辽宁本地': 'M3U_SOURCE_5',
-    '港澳台': 'M3U_SOURCE_6',
-    '咪视界': 'M3U_SOURCE_7',
-    '连宇体育': 'M3U_SOURCE_7',
-    '体育回看': 'M3U_SOURCE_7'
-}
-
-# 频道名称映射配置
-CHANNEL_NAME_MAPPING = {
-    "吉视都市": ["吉林都市", "吉视都市", "吉林电视台都市频道", "吉林都市频道"],
-    "吉视生活": ["吉林生活", "吉视生活", "吉林电视台生活频道", "吉林生活频道"],
-    "吉视影视": ["吉林影视", "吉视影视", "吉林电视台影视台", "吉林影视台"],
-    "吉视综艺": ["吉林综艺", "吉视综艺", "吉林电视台综艺频道", "吉林综艺频道"],
-    "吉视乡村": ["吉林乡村", "吉林电视台乡村频道", "吉林乡村频道"],
-    "吉林东北": ["吉林东北", "吉视东北", "吉林电视台东北频道", "东北频道"],
-    "吉林新闻": ["吉林新闻", "吉视新闻", "吉林电视台新闻频道", "新闻频道"],
-    "吉林公共": ["吉林公共", "吉视公共", "吉林电视台公共频道", "公共频道"],
-    "长春综合": ["长春综合", "CRT综合"],
-    "长春文旅体育": ["长春娱乐", "CRT娱乐", "长春文旅体育"],
-    "长春市民生活": ["长春市民", "CRT市民", "长春市民生活"],
-    "辽宁都市1": ["100"],
-    "辽宁影视剧1": ["101"],
-    "辽宁教育青少1": ["102"],
-    "辽宁生活1": ["103"],
-    "辽宁公共1": ["104"],
-    "辽宁北方1": ["105"],
-    "辽宁经济1": ["106"],
-    "辽宁体育休闲1": ["107"],
-    "辽宁移动电视1": ["108"],
-}
-
-class ChannelUpdater:
-    def __init__(self):
-        self.logs = []
-        
-    def log(self, msg):
-        """记录日志信息"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log_msg = f"[{timestamp}] {msg}"
-        self.logs.append(log_msg)
-        print(log_msg)
+# 从环境变量获取M3U源地址（优先使用环境变量）
+def get_m3u_sources_from_env():
+    """从环境变量获取M3U源地址"""
+    sources = {}
     
-    def parse_m3u_content(self, content):
-        """解析M3U内容，支持标准格式和非标准格式"""
-        channels = []
-        lines = content.split('\n')
+    # 尝试从环境变量获取
+    for i in range(1, 5):
+        env_key = f"M3U_SOURCE_{i}"
+        env_value = os.environ.get(env_key)
         
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            
-            # 跳过空行和注释行（除了#EXTINF）
-            if not line or (line.startswith('#') and not line.startswith('#EXTINF:')):
-                i += 1
-                continue
-            
-            # 情况1：标准M3U格式 - #EXTINF行
-            if line.startswith('#EXTINF:'):
-                extinf_line = line
-                i += 1
-                
-                # 寻找下一个非空非注释行作为URL
-                while i < len(lines) and (not lines[i].strip() or lines[i].strip().startswith('#')):
-                    i += 1
-                
-                if i < len(lines):
-                    url_line = lines[i].strip()
-                    if url_line and not url_line.startswith('#'):
-                        # 提取频道信息
-                        channel_info = {
-                            'extinf': extinf_line,
-                            'url': url_line,
-                            'channel_name': '',
-                            'group': ''
-                        }
-                        
-                        # 提取频道名称
-                        name_match = re.search(r',([^,]+)$', extinf_line)
-                        if name_match:
-                            channel_name = name_match.group(1).strip()
-                            # 清理线路标识
-                            channel_name_clean = re.sub(r'\s*线路\d+$', '', channel_name)
-                            channel_info['channel_name'] = channel_name_clean
-                        
-                        # 提取分组
-                        group_match = re.search(r'group-title="([^"]+)"', extinf_line)
-                        if group_match:
-                            channel_info['group'] = group_match.group(1)
-                        
-                        channels.append(channel_info)
-            
-            # 情况2：非标准格式 - 逗号分隔的频道名和URL
-            elif ',' in line:
-                # 检查是否为URL格式（包含http://或https://）
-                parts = line.split(',', 1)
-                if len(parts) == 2:
-                    channel_name_part = parts[0].strip()
-                    url_part = parts[1].strip()
-                    
-                    # 验证URL部分是否为有效的URL
-                    if url_part.startswith(('http://', 'https://')):
-                        # 创建模拟的EXTINF行
-                        extinf_line = f'#EXTINF:-1,{channel_name_part}'
-                        
-                        channel_info = {
-                            'extinf': extinf_line,
-                            'url': url_part,
-                            'channel_name': channel_name_part,
-                            'group': ''  # 非标准格式通常没有分组信息
-                        }
-                        
-                        channels.append(channel_info)
-            
-            i += 1
-        
-        return channels
-    
-    def fetch_m3u_source(self, source_url, source_name):
-        """获取M3U源内容"""
-        try:
-            if not source_url:
-                self.log(f"源 {source_name} URL为空，跳过")
-                return []
-            
-            self.log(f"正在获取源 {source_name}: {source_url[:50]}...")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        if env_value:
+            sources[env_key] = env_value
+            print(f"✓ 从环境变量获取到 {env_key}")
+        else:
+            # 如果环境变量没有，使用默认值（仅用于本地测试）
+            default_sources = {
+                "M3U_SOURCE_1": "http://example.com/source1.m3u",  # 央视源
+                "M3U_SOURCE_2": "http://example.com/source2.m3u",  # 咪咕源
+                "M3U_SOURCE_3": "http://example.com/source3.m3u",  # 卫视/付费源
+                "M3U_SOURCE_4": "http://example.com/source4.m3u"   # 吉林源
             }
-            
-            response = requests.get(source_url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            # 尝试不同的编码
-            encodings = ['utf-8', 'gbk', 'gb2312']
-            for encoding in encodings:
-                try:
-                    content = response.content.decode(encoding)
-                    channels = self.parse_m3u_content(content)
-                    self.log(f"成功从 {source_name} 解析 {len(channels)} 个频道")
-                    return channels
-                except UnicodeDecodeError:
-                    continue
-            
-            # 如果所有编码都失败，使用默认utf-8并忽略错误
-            content = response.content.decode('utf-8', errors='ignore')
-            channels = self.parse_m3u_content(content)
-            self.log(f"成功从 {source_name} 解析 {len(channels)} 个频道 (使用忽略错误模式)")
-            return channels
-            
-        except requests.exceptions.RequestException as e:
-            self.log(f"从 {source_name} 网络请求失败: {str(e)}")
+            if env_key in default_sources:
+                sources[env_key] = default_sources[env_key]
+                print(f"⚠ 使用默认值 {env_key} (环境变量未设置)")
+    
+    return sources
+
+# 分组与源的映射规则
+GROUP_SOURCE_MAP = {
+    "央视": "M3U_SOURCE_1",
+    "咪咕频道": "M3U_SOURCE_2", 
+    "地方卫视": "M3U_SOURCE_3",
+    "付费频道": "M3U_SOURCE_3",
+    "辽宁地方": "M3U_SOURCE_1",  # 线路1频道
+    "吉林地方": "M3U_SOURCE_4",  # 线路1频道
+    "冰茶体育": "M3U_SOURCE_2",  # 特殊分组：整个分组重新获取
+    "体育回看": "M3U_SOURCE_2"   # 特殊分组：整个分组重新获取
+}
+
+# 需要完整重新获取的特殊分组
+SPECIAL_GROUPS = ["冰茶体育", "体育回看"]
+
+# 文件路径
+INPUT_FILE = "index.html"      # 输入文件（模板）
+OUTPUT_FILE = "index.html"     # 输出文件（更新后）
+LOG_FILE = "update_log.txt"    # 日志文件
+
+# 频道名称清洗规则（用于匹配）
+CLEAN_PATTERNS = [
+    (r'CCTV-?', 'CCTV'),           # CCTV-1 -> CCTV1
+    (r'[-\s]', ''),                # 移除空格和短横线
+    (r'\(.*?\)', ''),              # 移除括号内容
+    (r'\[.*?\]', ''),              # 移除方括号内容
+    (r'标清|高清|HD|SD|直播', ''), # 移除画质标识
+    (r'频道|台', ''),              # 移除频道/台字
+    (r'^.*?卫视', '卫视'),         # 统一卫视格式
+]
+
+# ==================== 日志设置 ====================
+
+def setup_logging():
+    """配置日志"""
+    logger = logging.getLogger('IPTV_Updater')
+    logger.setLevel(logging.INFO)
+    
+    # 文件处理器
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # 格式
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+logger = setup_logging()
+
+# ==================== 核心函数 ====================
+
+def clean_channel_name(channel_name: str) -> str:
+    """清洗频道名称用于匹配"""
+    cleaned = channel_name.strip()
+    
+    for pattern, replacement in CLEAN_PATTERNS:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    
+    # 特殊处理CCTV频道
+    cctv_match = re.search(r'CCTV(\d+)', cleaned, re.IGNORECASE)
+    if cctv_match:
+        return f"CCTV{cctv_match.group(1)}"
+    
+    return cleaned.upper()
+
+def parse_m3u_line(line: str):
+    """解析M3U的一行（EXTINF行）"""
+    if not line.startswith('#EXTINF:'):
+        return None
+    
+    # 解析EXTINF行
+    line = line.strip()
+    
+    # 提取频道名称（逗号后面的部分）
+    channel_name = ""
+    tvg_info = {}
+    
+    # 查找最后一个逗号
+    last_comma = line.rfind(',')
+    if last_comma > 0:
+        channel_name = line[last_comma + 1:].strip()
+        
+        # 提取属性
+        attr_part = line[8:last_comma]  # 去掉#EXTINF:
+        # 解析属性
+        tvg_id_match = re.search(r'tvg-id="([^"]*)"', attr_part)
+        tvg_name_match = re.search(r'tvg-name="([^"]*)"', attr_part)
+        group_match = re.search(r'group-title="([^"]*)"', attr_part)
+        
+        if tvg_id_match:
+            tvg_info['tvg-id'] = tvg_id_match.group(1)
+        if tvg_name_match:
+            tvg_info['tvg-name'] = tvg_name_match.group(1)
+        if group_match:
+            tvg_info['group-title'] = group_match.group(1)
+    else:
+        # 简单格式
+        channel_name = line.split(',')[-1].strip()
+    
+    return channel_name, line, tvg_info
+
+def fetch_m3u_content(source_url: str):
+    """获取M3U源内容"""
+    try:
+        logger.info(f"获取M3U源: {source_url[:50]}...")
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(source_url, headers=headers, timeout=30)
+        response.encoding = 'utf-8'
+        
+        if response.status_code == 200:
+            content = response.text.splitlines()
+            logger.info(f"成功获取，行数: {len(content)}")
+            return content
+        else:
+            logger.error(f"获取失败，状态码: {response.status_code}")
             return []
-        except Exception as e:
-            self.log(f"获取源 {source_name} 失败: {str(e)}")
-            return []
+    except Exception as e:
+        logger.error(f"获取M3U源时出错: {str(e)}")
+        return []
+
+def build_channel_map(m3u_content: list):
+    """从M3U内容构建频道映射字典"""
+    channel_map = {}
+    current_extinf = None
+    current_tvg_info = {}
     
-    def extract_channel_key(self, channel_name):
-        """从频道名称中提取关键标识"""
-        if not channel_name:
-            return ""
-        
-        # 清理常见前缀后缀
-        clean_name = channel_name.lower()
-        
-        # 处理数字频道（如100, 101等）
-        if re.match(r'^\d+$', clean_name):
-            return clean_name
-        
-        # 提取CCTV、卫视等标识
-        patterns = [
-            r'(cctv[-\s]?\d+)',
-            r'(cctv[-\s]?[a-z\d]+)',
-            r'([a-z]+[-\s]?卫视)',
-            r'(北京|天津|河北|山西|内蒙古|辽宁|吉林|黑龙江|上海|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|重庆|四川|贵州|云南|西藏|陕西|甘肃|青海|宁夏|新疆)[-\s]?(卫视|台)',
-            r'(凤凰|中天|东森|TVB|翡翠|明珠|澳亚|澳门)[-\s]?[^,]*',
-            r'(CETV[-\s]?\d+)',
-            r'(湖南|浙江|江苏|东方|北京|安徽|山东|广东|深圳|天津|重庆|黑龙江|湖北|四川|东南|江西|广西|河南|河北|云南|陕西|贵州|甘肃|宁夏|青海|新疆|西藏|内蒙古|兵团|厦门|海峡|三沙)[-\s]?(卫视|台)'
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, clean_name, re.IGNORECASE)
-            if match:
-                key = match.group(1).upper()
-                # 清理空格和特殊字符
-                key = re.sub(r'[^\w\u4e00-\u9fa5]+', '', key)
-                return key
-        
-        # 如果没有匹配到，返回清理后的名称
-        return re.sub(r'[^\w\u4e00-\u9fa5]+', '', clean_name)
+    for line in m3u_content:
+        line = line.strip()
+        if not line:
+            continue
+            
+        if line.startswith('#EXTINF:'):
+            # 解析EXTINF行
+            parsed = parse_m3u_line(line)
+            if parsed:
+                channel_name, extinf_line, tvg_info = parsed
+                current_extinf = extinf_line
+                current_tvg_info = tvg_info
+        elif current_extinf and not line.startswith('#'):
+            # 这是URL行
+            url_line = line
+            channel_name_from_extinf = current_extinf.split(',')[-1].strip()
+            
+            # 清洗频道名称用于匹配
+            clean_name = clean_channel_name(channel_name_from_extinf)
+            
+            if clean_name not in channel_map:
+                channel_map[clean_name] = []
+            
+            # 存储频道信息
+            channel_map[clean_name].append((
+                channel_name_from_extinf,
+                current_extinf,
+                url_line,
+                current_tvg_info.get('group-title', '')
+            ))
+            
+            current_extinf = None
+            current_tvg_info = {}
     
-    def get_channel_aliases(self, channel_name):
-        """获取频道的所有别名"""
-        aliases = [channel_name]
-        
-        # 检查频道名称映射
-        for base_name, alias_list in CHANNEL_NAME_MAPPING.items():
-            # 如果当前频道名称是映射中的基础名称
-            if base_name == channel_name:
-                aliases.extend(alias_list)
-            # 如果当前频道名称是映射中的别名
-            elif channel_name in alias_list:
-                aliases.append(base_name)
-                aliases.extend([a for a in alias_list if a != channel_name])
-        
-        # 去重
-        unique_aliases = []
-        seen = set()
-        for alias in aliases:
-            if alias not in seen:
-                seen.add(alias)
-                unique_aliases.append(alias)
-        
-        return unique_aliases
+    logger.info(f"构建频道映射，唯一频道数: {len(channel_map)}")
+    return channel_map
+
+def extract_special_group_from_source(source_url: str, target_group: str):
+    """从M3U源中提取特定分组的全部内容"""
+    logger.info(f"提取特殊分组 '{target_group}'")
+    m3u_content = fetch_m3u_content(source_url)
+    if not m3u_content:
+        return []
     
-    def is_channel_match(self, channel_name1, channel_name2):
-        """判断两个频道名称是否匹配"""
-        if not channel_name1 or not channel_name2:
-            return False
+    special_group_lines = []
+    in_target_group = False
+    current_extinf = None
+    
+    for line in m3u_content:
+        line = line.strip()
+        if not line:
+            continue
+            
+        if line.startswith('#EXTINF:'):
+            # 检查是否属于目标分组
+            if f'group-title="{target_group}"' in line or target_group in line:
+                in_target_group = True
+                current_extinf = line
+                special_group_lines.append(line)
+            else:
+                in_target_group = False
+                current_extinf = None
+        elif in_target_group and current_extinf and not line.startswith('#'):
+            # 添加URL行
+            special_group_lines.append(line)
+            current_extinf = None
+    
+    logger.info(f"找到 {len(special_group_lines)//2} 个频道在分组 '{target_group}'")
+    return special_group_lines
+
+def process_index_html():
+    """处理index.html文件，提取频道信息和分组"""
+    try:
+        with open(INPUT_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().splitlines()
         
-        # 获取两个频道的所有别名
-        aliases1 = self.get_channel_aliases(channel_name1)
-        aliases2 = self.get_channel_aliases(channel_name2)
+        logger.info(f"读取 {INPUT_FILE}，行数: {len(content)}")
         
-        # 检查是否有共同的别名
-        for alias1 in aliases1:
-            alias1_clean = re.sub(r'\s+', '', alias1.lower())
-            for alias2 in aliases2:
-                alias2_clean = re.sub(r'\s+', '', alias2.lower())
+        # 存储文件头部（非频道内容）
+        header_lines = []
+        channels_by_group = {}
+        current_group = None
+        current_extinf = None
+        current_channel_name = None
+        
+        for i, line in enumerate(content):
+            line = line.strip()
+            if not line:
+                continue
                 
-                # 完全匹配或包含匹配
-                if (alias1_clean == alias2_clean or 
-                    alias1_clean in alias2_clean or
-                    alias2_clean in alias1_clean):
-                    return True
+            if line.startswith('#EXTM3U'):
+                header_lines.append(line)
+            elif line.startswith('#EXTINF:'):
+                current_extinf = line
+                
+                # 提取分组信息
+                group_match = re.search(r'group-title="([^"]+)"', line)
+                if group_match:
+                    current_group = group_match.group(1)
+                else:
+                    # 如果没有group-title，尝试从频道名称推断
+                    channel_part = line.split(',')[-1]
+                    current_group = "未知分组"
+                
+                # 提取频道名称
+                if ',' in line:
+                    current_channel_name = line.split(',')[-1].strip()
+                else:
+                    current_channel_name = "未知频道"
+                
+                # 初始化分组列表
+                if current_group not in channels_by_group:
+                    channels_by_group[current_group] = []
+                
+            elif current_extinf and not line.startswith('#'):
+                # 这是URL行，存储频道信息
+                channels_by_group[current_group].append((
+                    current_channel_name,
+                    current_extinf,
+                    line
+                ))
+                current_extinf = None
+                current_channel_name = None
+            else:
+                # 其他行（注释等）
+                header_lines.append(line)
         
-        # 关键标识匹配
-        key1 = self.extract_channel_key(channel_name1)
-        key2 = self.extract_channel_key(channel_name2)
-        if key1 and key2 and key1 == key2:
-            return True
+        # 记录提取的信息
+        for group, channels in channels_by_group.items():
+            logger.info(f"分组 '{group}': {len(channels)} 个频道")
         
-        return False
+        return header_lines, channels_by_group
+        
+    except Exception as e:
+        logger.error(f"处理 {INPUT_FILE} 时出错: {str(e)}")
+        return [], {}
+
+def find_best_match(channel_name: str, channel_map: dict):
+    """在频道映射中查找最佳匹配"""
+    clean_name = clean_channel_name(channel_name)
     
-    def find_channel_in_source(self, channel_name, source_channels, group_name=None):
-        """在指定源的频道列表中查找匹配的频道"""
-        if not channel_name:
-            return []
+    # 1. 精确匹配（清洗后的名称）
+    if clean_name in channel_map:
+        # 返回第一个匹配项
+        for _, extinf_line, url_line, _ in channel_map[clean_name]:
+            return extinf_line, url_line
+    
+    # 2. 模糊匹配（包含关系）
+    for map_name, channel_list in channel_map.items():
+        if clean_name in map_name or map_name in clean_name:
+            for _, extinf_line, url_line, _ in channel_list:
+                return extinf_line, url_line
+    
+    # 3. 尝试匹配部分（针对CCTV频道）
+    if 'CCTV' in clean_name:
+        cctv_num_match = re.search(r'CCTV(\d+)', clean_name, re.IGNORECASE)
+        if cctv_num_match:
+            cctv_num = cctv_num_match.group(1)
+            for map_name, channel_list in channel_map.items():
+                if f'CCTV{cctv_num}' in map_name.upper():
+                    for _, extinf_line, url_line, _ in channel_list:
+                        return extinf_line, url_line
+    
+    logger.warning(f"未找到匹配的频道: {channel_name} (清洗后: {clean_name})")
+    return None
+
+def update_channels(channels_by_group: dict, m3u_sources: dict):
+    """更新所有频道的URL"""
+    updated_lines = []
+    total_channels = 0
+    updated_count = 0
+    failed_count = 0
+    
+    for group_name, channels in channels_by_group.items():
+        logger.info(f"\n处理分组: {group_name}")
         
-        found_channels = []
-        
-        for channel in source_channels:
-            source_channel_name = channel.get('channel_name', '')
-            if not source_channel_name:
+        # 检查是否为特殊分组
+        if group_name in SPECIAL_GROUPS:
+            logger.info(f"特殊分组 '{group_name}'，执行完整重新获取")
+            
+            # 获取对应的M3U源
+            source_key = GROUP_SOURCE_MAP.get(group_name)
+            if not source_key:
+                logger.error(f"分组 '{group_name}' 未配置M3U源")
+                continue
+                
+            source_url = m3u_sources.get(source_key)
+            if not source_url:
+                logger.error(f"未找到M3U源: {source_key}")
                 continue
             
-            # 判断是否匹配
-            if self.is_channel_match(channel_name, source_channel_name):
-                # 如果指定了分组，检查分组是否匹配
-                if not group_name or channel.get('group', '') == group_name:
-                    found_channels.append(channel)
-        
-        return found_channels
-    
-    def read_existing_index(self):
-        """读取现有的index.html文件"""
-        try:
-            with open('index.html', 'r', encoding='utf-8') as f:
-                content = f.read()
+            # 检查是否为默认URL（example.com）
+            if "example.com" in source_url:
+                logger.error(f"M3U源 {source_key} 未正确配置，使用默认值，无法更新分组 '{group_name}'")
+                # 保留原始内容
+                for _, extinf_line, old_url in channels:
+                    updated_lines.append(extinf_line)
+                    updated_lines.append(old_url)
+                continue
             
-            # 提取M3U头部
-            header_match = re.search(r'^#EXTM3U.*?(?=#EXTINF:)', content, re.DOTALL | re.MULTILINE)
-            header = header_match.group(0) if header_match else '#EXTM3U x-tvg-url="https://epg.v1.mk/fy.xml"\n'
-            
-            # 解析现有频道
-            existing_channels = []
-            lines = content.split('\n')
-            
-            i = 0
-            while i < len(lines):
-                line = lines[i].strip()
-                if line.startswith('#EXTINF:'):
-                    extinf_line = line
-                    i += 1
-                    if i < len(lines):
-                        url_line = lines[i].strip()
-                        if url_line and not url_line.startswith('#'):
-                            # 提取信息
-                            channel_info = {
-                                'extinf': extinf_line,
-                                'url': url_line,
-                                'original_extinf': extinf_line,
-                                'original_url': url_line
-                            }
-                            
-                            # 提取分组
-                            group_match = re.search(r'group-title="([^"]+)"', extinf_line)
-                            if group_match:
-                                channel_info['group'] = group_match.group(1)
-                            
-                            # 提取频道名称
-                            name_match = re.search(r',([^,]+)$', extinf_line)
-                            if name_match:
-                                full_name = name_match.group(1).strip()
-                                # 清理线路标识
-                                base_name = re.sub(r'\s*线路\d+$', '', full_name)
-                                channel_info['channel_name'] = base_name
-                                channel_info['base_name'] = base_name
-                            
-                            existing_channels.append(channel_info)
-                i += 1
-            
-            return header, existing_channels
-            
-        except FileNotFoundError:
-            self.log("index.html 不存在，创建新文件")
-            return '#EXTM3U x-tvg-url="https://epg.v1.mk/fy.xml"\n', []
-        except Exception as e:
-            self.log(f"读取index.html失败: {str(e)}")
-            return '#EXTM3U x-tvg-url="https://epg.v1.mk/fy.xml"\n', []
-    
-    def process_channels(self, existing_channels, sources_data):
-        """处理所有频道"""
-        self.log("=" * 60)
-        self.log("开始处理频道更新")
-        self.log("=" * 60)
-        
-        # 第一阶段：按照原有规则处理线路1
-        self.log("\n第一阶段：按照分组规则处理")
-        self.log("-" * 60)
-        
-        # 按分组和频道名称组织数据
-        channel_dict = defaultdict(list)
-        
-        for channel in existing_channels:
-            group = channel.get('group', '')
-            base_name = channel.get('base_name', '')
-            
-            if group and base_name:
-                key = f"{group}||{base_name}"
-                # 每个频道只需要保留一个EXTINF行作为模板
-                if not channel_dict[key]:
-                    channel_dict[key].append({
-                        'extinf': channel['extinf'],
-                        'urls': [],  # 所有播放源URL
-                        'group': group,
-                        'base_name': base_name
-                    })
-                # 添加初始URL
-                channel_dict[key][0]['urls'].append(channel['url'])
-        
-        # 处理每个分组和频道
-        final_channels = []
-        processed_keys = []
-        
-        for key, channel_list in channel_dict.items():
-            group = channel_list[0]['group']
-            base_name = channel_list[0]['base_name']
-            extinf_template = channel_list[0]['extinf']
-            
-            self.log(f"\n处理频道: {group} - {base_name}")
-            
-            # 获取对应的源（线路1专用）
-            source_key = GROUP_SOURCE_MAP.get(group)
-            
-            # 特殊处理：连宇体育
-            if group == '连宇体育':
-                self.log(f"  特殊分组: {group}")
-                found_channels = []
-                if 'M3U_SOURCE_7' in sources_data:
-                    for src_channel in sources_data['M3U_SOURCE_7']:
-                        if src_channel.get('group') == '冰茶体育':
-                            found_channels.append(src_channel)
-                
-                if found_channels:
-                    # 清空原有URL，使用找到的第一个URL
-                    channel_list[0]['urls'] = [found_channels[0]['url']]
-                    self.log(f"  ✓ 更新播放源 (来自M3U_SOURCE_7)")
-                else:
-                    self.log(f"  ✗ 未在M3U_SOURCE_7中找到分组为'冰茶体育'的频道")
-            
-            # 特殊处理：体育回看
-            elif group == '体育回看':
-                self.log(f"  特殊分组: {group}")
-                found_channels = []
-                if 'M3U_SOURCE_7' in sources_data:
-                    for src_channel in sources_data['M3U_SOURCE_7']:
-                        if src_channel.get('group') == '体育回看':
-                            found_channels.append(src_channel)
-                
-                if found_channels:
-                    # 清空原有URL，使用找到的第一个URL
-                    channel_list[0]['urls'] = [found_channels[0]['url']]
-                    self.log(f"  ✓ 更新播放源 (来自M3U_SOURCE_7)")
-                else:
-                    self.log(f"  ✗ 未在M3U_SOURCE_7中找到分组为'体育回看'的频道")
-            
-            # 其他分组
+            # 提取整个分组
+            special_lines = extract_special_group_from_source(source_url, group_name)
+            if special_lines:
+                updated_lines.extend(special_lines)
+                updated_count += len(special_lines) // 2
+                total_channels += len(special_lines) // 2
             else:
-                # 线路1：从指定源获取
-                if source_key and source_key in sources_data and sources_data[source_key]:
-                    found_channels = self.find_channel_in_source(base_name, sources_data[source_key])
-                    if found_channels:
-                        # 使用找到的第一个频道作为线路1
-                        if channel_list[0]['urls']:
-                            # 替换第一个URL
-                            channel_list[0]['urls'][0] = found_channels[0]['url']
-                        else:
-                            channel_list[0]['urls'].append(found_channels[0]['url'])
-                        
-                        self.log(f"  ✓ 更新线路1播放源 (来自{source_key})")
-                        
-                        # 收集其他源中的相同频道
-                        all_other_urls = []
-                        for other_source_key, other_channels in sources_data.items():
-                            # 跳过指定的源（已经用作线路1）
-                            if other_source_key == source_key:
-                                continue
-                            
-                            if other_channels:
-                                other_found = self.find_channel_in_source(base_name, other_channels)
-                                for found in other_found:
-                                    if found['url'] not in all_other_urls:
-                                        all_other_urls.append(found['url'])
-                        
-                        # 添加其他源的URL
-                        for url in all_other_urls:
-                            if url not in channel_list[0]['urls']:
-                                channel_list[0]['urls'].append(url)
-                        
-                        if all_other_urls:
-                            self.log(f"  ✓ 找到 {len(all_other_urls)} 个其他播放源")
-                    else:
-                        self.log(f"  ✗ 未在{source_key}中找到频道")
-                else:
-                    self.log(f"  ✗ 源 {source_key} 未配置或无数据")
+                logger.warning(f"未找到特殊分组 '{group_name}' 的内容，保留原始")
+                for _, extinf_line, old_url in channels:
+                    updated_lines.append(extinf_line)
+                    updated_lines.append(old_url)
+            continue
+        
+        # 普通分组处理
+        source_key = GROUP_SOURCE_MAP.get(group_name)
+        if not source_key:
+            logger.warning(f"分组 '{group_name}' 未配置M3U源，跳过")
+            continue
             
-            # 记录处理结果
-            processed_keys.append(key)
+        source_url = m3u_sources.get(source_key)
+        if not source_url:
+            logger.error(f"未找到M3U源: {source_key}")
+            continue
+        
+        # 检查是否为默认URL（example.com）
+        if "example.com" in source_url:
+            logger.warning(f"M3U源 {source_key} 未正确配置，使用默认值，跳过分组 '{group_name}'")
+            # 保留原始内容
+            for _, extinf_line, old_url in channels:
+                updated_lines.append(extinf_line)
+                updated_lines.append(old_url)
+                total_channels += 1
+            continue
+        
+        # 获取并构建该源的频道映射
+        logger.info(f"从 {source_key} 获取频道映射")
+        m3u_content = fetch_m3u_content(source_url)
+        if not m3u_content:
+            logger.error(f"无法从 {source_key} 获取内容，跳过分组 {group_name}")
+            # 保留原始内容
+            for _, extinf_line, old_url in channels:
+                updated_lines.append(extinf_line)
+                updated_lines.append(old_url)
+                total_channels += 1
+            continue
             
-            # 统计当前频道的播放源数量
-            url_count = len(channel_list[0]['urls'])
-            if url_count > 0:
-                self.log(f"  结果: 共 {url_count} 个播放源")
+        channel_map = build_channel_map(m3u_content)
+        
+        # 为每个频道查找匹配的URL
+        for channel_name, extinf_line, old_url in channels:
+            total_channels += 1
             
-            # 添加到最终频道列表
-            for url in channel_list[0]['urls']:
-                final_channels.append({
-                    'extinf': extinf_template,
-                    'url': url,
-                    'group': group,
-                    'base_name': base_name
-                })
-        
-        return final_channels
-    
-    def create_final_m3u(self, header, channels):
-        """创建最终的M3U内容"""
-        lines = [header.strip()]
-        
-        # 添加所有频道（相同的EXTINF行，不同的URL）
-        for channel in channels:
-            lines.append(channel['extinf'])
-            lines.append(channel['url'])
-        
-        # 添加更新时间
-        update_time = datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')
-        lines.append(f'\n# 更新时间: {update_time}')
-        
-        # 添加处理摘要
-        lines.append('\n# 处理摘要:')
-        
-        # 统计每个频道的播放源数量
-        channel_stats = defaultdict(list)
-        for channel in channels:
-            key = f"{channel['group']}||{channel['base_name']}"
-            if channel['url'] not in channel_stats[key]:
-                channel_stats[key].append(channel['url'])
-        
-        lines.append(f"# 总频道数: {len(channel_stats)}")
-        lines.append(f"# 总播放源数: {len(channels)}")
-        lines.append("#")
-        
-        # 按分组统计
-        group_stats = defaultdict(lambda: {'channels': 0, 'sources': 0})
-        for key, urls in channel_stats.items():
-            group = key.split('||')[0]
-            group_stats[group]['channels'] += 1
-            group_stats[group]['sources'] += len(urls)
-        
-        lines.append("# 分组统计:")
-        for group, stats in sorted(group_stats.items()):
-            lines.append(f"#   {group}: {stats['channels']}个频道, {stats['sources']}个播放源")
-        
-        # 添加详细日志
-        lines.append('\n# 详细处理日志:')
-        for log in self.logs:
-            lines.append(f'# {log}')
-        
-        return '\n'.join(lines)
-    
-    def run(self):
-        """运行主程序"""
-        self.log("=" * 60)
-        self.log("开始更新IPTV M3U列表")
-        self.log("=" * 60)
-        
-        # 记录频道映射配置
-        self.log("频道名称映射配置:")
-        for base_name, aliases in CHANNEL_NAME_MAPPING.items():
-            self.log(f"  {base_name}: {aliases}")
-        
-        # 1. 获取所有M3U源数据
-        sources_data = {}
-        for source_key, source_url in M3U_SOURCES.items():
-            if source_url:
-                channels = self.fetch_m3u_source(source_url, source_key)
-                sources_data[source_key] = channels
+            # 保持EXTINF行不变，只更新URL
+            updated_lines.append(extinf_line)
+            
+            # 查找匹配的URL
+            match_result = find_best_match(channel_name, channel_map)
+            if match_result:
+                new_extinf, new_url = match_result
+                updated_lines.append(new_url)
+                updated_count += 1
+                logger.info(f"  ✓ 更新: {channel_name}")
             else:
-                self.log(f"{source_key} 未配置，跳过")
-        
-        # 统计源数据
-        total_channels_in_sources = sum(len(channels) for channels in sources_data.values())
-        self.log(f"从所有源中获取到 {total_channels_in_sources} 个频道")
-        
-        # 2. 读取现有的index.html
-        header, existing_channels = self.read_existing_index()
-        self.log(f"读取到 {len(existing_channels)} 个现有频道")
-        
-        # 3. 处理所有频道
-        final_channels = self.process_channels(existing_channels, sources_data)
-        
-        # 4. 生成最终的M3U内容
-        final_content = self.create_final_m3u(header, final_channels)
-        
-        # 5. 写入文件
-        try:
-            with open('index.html', 'w', encoding='utf-8') as f:
-                f.write(final_content)
-            
-            # 统计结果
-            channel_dict = defaultdict(list)
-            for channel in final_channels:
-                key = f"{channel['group']}||{channel['base_name']}"
-                if channel['url'] not in channel_dict[key]:
-                    channel_dict[key].append(channel['url'])
-            
-            self.log(f"\n更新完成")
-            self.log(f"最终结果: {len(channel_dict)} 个频道, {len(final_channels)} 个播放源")
-            self.log("index.html 已成功保存")
-            
-        except Exception as e:
-            self.log(f"写入文件失败: {str(e)}")
-            raise
-        
-        self.log("=" * 60)
-        self.log("更新完成")
-        self.log("=" * 60)
+                # 使用原始URL
+                updated_lines.append(old_url)
+                failed_count += 1
+                logger.warning(f"  ✗ 未匹配: {channel_name}，使用原URL")
+    
+    logger.info(f"\n更新统计:")
+    logger.info(f"总频道数: {total_channels}")
+    logger.info(f"成功更新: {updated_count}")
+    logger.info(f"更新失败: {failed_count}")
+    
+    return updated_lines
 
 def main():
-    updater = ChannelUpdater()
+    """主函数"""
+    logger.info("=" * 60)
+    logger.info("开始IPTV自动更新")
+    logger.info("=" * 60)
+    
+    start_time = datetime.now()
+    
     try:
-        updater.run()
+        # 0. 获取M3U源地址
+        m3u_sources = get_m3u_sources_from_env()
+        
+        # 检查是否有配置的M3U源
+        if not m3u_sources:
+            logger.error("错误：未找到任何M3U源配置")
+            logger.info("请设置环境变量: M3U_SOURCE_1, M3U_SOURCE_2, M3U_SOURCE_3, M3U_SOURCE_4")
+            return 1
+        
+        logger.info(f"已配置 {len(m3u_sources)} 个M3U源")
+        for key, value in m3u_sources.items():
+            # 不显示完整的URL以防泄露
+            display_value = value if len(value) < 50 else value[:50] + "..."
+            logger.info(f"  {key}: {display_value}")
+        
+        # 1. 读取并解析index.html
+        header_lines, channels_by_group = process_index_html()
+        if not channels_by_group:
+            logger.error("未找到任何频道信息，请检查文件格式")
+            return 1
+        
+        # 2. 更新频道URL
+        updated_channel_lines = update_channels(channels_by_group, m3u_sources)
+        
+        # 3. 生成最终内容
+        final_content = []
+        
+        # 添加头部
+        final_content.extend(header_lines)
+        
+        # 移除头部中可能存在的更新时间注释
+        final_content = [line for line in final_content if "更新时间" not in line]
+        
+        # 添加频道内容
+        final_content.extend(updated_channel_lines)
+        
+        # 添加更新时间
+        current_time = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
+        final_content.append(f"\n# 更新时间：{current_time}")
+        
+        # 4. 写入文件
+        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(final_content))
+        
+        # 5. 输出统计信息
+        end_time = datetime.now()
+        duration = (end_time - start_time).seconds
+        
+        logger.info("\n" + "=" * 60)
+        logger.info("更新完成！")
+        logger.info(f"输出文件: {OUTPUT_FILE}")
+        logger.info(f"日志文件: {LOG_FILE}")
+        logger.info(f"开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"耗时: {duration} 秒")
+        logger.info("=" * 60)
+        
+        # 6. 备份原始文件（可选）
+        backup_file = f"index_backup_{start_time.strftime('%Y%m%d_%H%M%S')}.html"
+        try:
+            with open(INPUT_FILE, 'r', encoding='utf-8') as f_in, \
+                 open(backup_file, 'w', encoding='utf-8') as f_out:
+                f_out.write(f_in.read())
+            logger.info(f"原始文件已备份至: {backup_file}")
+        except:
+            logger.warning("无法创建备份文件")
+        
     except Exception as e:
-        updater.log(f"程序执行失败: {str(e)}")
-        raise
+        logger.error(f"更新过程中出现错误: {str(e)}", exc_info=True)
+        return 1
+    
+    return 0
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    # 检查必要文件
+    if not os.path.exists(INPUT_FILE):
+        logger.error(f"错误：找不到输入文件 {INPUT_FILE}")
+        logger.info("请将脚本放在与 index.html 相同的目录中")
+        sys.exit(1)
+    
+    # 运行主程序
+    exit_code = main()
+    sys.exit(exit_code)
