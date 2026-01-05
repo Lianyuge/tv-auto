@@ -37,7 +37,7 @@ def get_m3u_sources_from_env():
 # 分组与源的映射规则（新增更多规则）
 GROUP_SOURCE_MAP = {
     "央视": "M3U_SOURCE_1",
-    "咪咕频道": "M3U_SOURCE_2", 
+    "咪咕频道": "M3U_SOURCE_5", 
     "地方卫视": "M3U_SOURCE_3",  # 修改为M3U_SOURCE_3
     "付费频道": "M3U_SOURCE_3",
     "辽宁地方": "M3U_SOURCE_1",  # 线路1频道
