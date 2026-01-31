@@ -33,18 +33,14 @@ jobs:
         
     - name: Run update script
       env:
-        M3U_SOURCE_1: ${{ secrets.M3U_SOURCE_1 }}
-        M3U_SOURCE_2: ${{ secrets.M3U_SOURCE_2 }}
-        M3U_SOURCE_3: ${{ secrets.M3U_SOURCE_3 }}
-        M3U_SOURCE_4: ${{ secrets.M3U_SOURCE_4 }}
-        M3U_SOURCE_5: ${{ secrets.M3U_SOURCE_5 }}
-        M3U_SOURCE_6: ${{ secrets.M3U_SOURCE_6 }}
-        M3U_SOURCE_7: ${{ secrets.M3U_SOURCE_7 }}
-        M3U_SOURCE_8: ${{ secrets.M3U_SOURCE_8 }}
-        M3U_SOURCE_9: ${{ secrets.M3U_SOURCE_9 }}
-        M3U_SOURCE_10: ${{ secrets.M3U_SOURCE_10 }}
-        M3U_SOURCE_11: ${{ secrets.M3U_SOURCE_11 }}
-        M3U_SOURCE_12: ${{ secrets.M3U_SOURCE_12 }}
+        # 【在这里修改或增加分组】
+        # 格式为 M3U_SOURCE_分组名: ${{ secrets.Secret名 }}
+        M3U_SOURCE_咪咕: ${{ secrets.M3U_SOURCE_1 }}
+        M3U_SOURCE_吉林: ${{ secrets.M3U_SOURCE_2 }}
+        M3U_SOURCE_辽宁: ${{ secrets.M3U_SOURCE_3 }}
+        M3U_SOURCE_北京: ${{ secrets.M3U_SOURCE_4 }}
+        M3U_SOURCE_上海: ${{ secrets.M3U_SOURCE_5 }}
+        M3U_SOURCE_冰茶: ${{ secrets.M3U_SOURCE_6 }}
       run: python scripts/update_sources.py
       
     - name: Commit and push changes
