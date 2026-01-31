@@ -2,11 +2,8 @@ name: Update M3U Live Sources
 
 on:
   schedule:
-    # 北京时间0点 (UTC时间前一天的16点)
     - cron: '0 16 * * *'
-    # 北京时间5点 (UTC时间前一天的21点)  
     - cron: '0 21 * * *'
-    # 北京时间17点 (UTC时间9点)
     - cron: '0 9 * * *'
   workflow_dispatch:
 
@@ -33,8 +30,9 @@ jobs:
         
     - name: Run update script
       env:
-        # 【在这里修改或增加分组】
-        # 格式为 M3U_SOURCE_分组名: ${{ secrets.Secret名 }}
+        # 这里定义显示顺序，用逗号隔开，必须和下面的后缀对应
+        SOURCE_ORDER: "咪咕,吉林,辽宁,北京,上海,冰茶"
+        
         M3U_SOURCE_咪咕: ${{ secrets.M3U_SOURCE_1 }}
         M3U_SOURCE_吉林: ${{ secrets.M3U_SOURCE_2 }}
         M3U_SOURCE_辽宁: ${{ secrets.M3U_SOURCE_3 }}
@@ -48,5 +46,5 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add .
-        git diff --staged --quiet || git commit -m "Auto-update live sources: $(date +'%Y-%m-%d %H:%M') UTC"
+        git diff --staged --quiet || git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M') UTC"
         git push
