@@ -39,7 +39,10 @@ jobs:
         M3U_SOURCE_北京: ${{ secrets.M3U_SOURCE_4 }}
         M3U_SOURCE_上海: ${{ secrets.M3U_SOURCE_5 }}
         M3U_SOURCE_冰茶: ${{ secrets.M3U_SOURCE_6 }}
-        M3U_SOURCE_吉林组播: ${{ secrets.M3U_SOURCE_7 }}
+        M3U_SOURCE_吉林电信: ${{ secrets.M3U_SOURCE_7 }}
+        M3U_SOURCE_吉林联通: ${{ secrets.M3U_SOURCE_8 }}
+        M3U_SOURCE_辽宁联通: ${{ secrets.M3U_SOURCE_9 }}
+        M3U_SOURCE_辽宁酒店: ${{ secrets.M3U_SOURCE_10 }}
       run: python scripts/update_sources.py
       
     - name: Commit and push changes
