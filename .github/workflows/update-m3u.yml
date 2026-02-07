@@ -31,9 +31,10 @@ jobs:
     - name: Run update script
       env:
         # 这里定义显示顺序，用逗号隔开，必须和下面的后缀对应
-        SOURCE_ORDER: "咪咕,吉林,辽宁,北京,上海,冰茶,吉林电信,吉林联通,辽宁联通,辽宁酒店,全国"
+        SOURCE_ORDER: "咪咕,咪咕精选,吉林,辽宁,北京,上海,冰茶,吉林电信,吉林联通,辽宁联通,辽宁酒店,全国"
         
-        M3U_SOURCE_咪咕: ${{ secrets.M3U_SOURCE_1 }}
+        M3U_SOURCE_咪咕大全: ${{ secrets.M3U_SOURCE_1 }}
+        M3U_SOURCE_咪咕精选: ${{ secrets.M3U_SOURCE_12 }}
         M3U_SOURCE_全国: ${{ secrets.M3U_SOURCE_11 }}
         M3U_SOURCE_吉林: ${{ secrets.M3U_SOURCE_2 }}
         M3U_SOURCE_辽宁: ${{ secrets.M3U_SOURCE_3 }}
